@@ -1,5 +1,5 @@
 # Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
-# PowerShell 5.1+ required — checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
+# PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
 
 $claudeDir = "$env:USERPROFILE\.claude"
@@ -8,7 +8,7 @@ $settingsPath = "$claudeDir\settings.json"
 $notifyPath = "$claudeDir\notify.ps1"
 $gitRefreshPath = "$claudeDir\git-refresh.ps1"
 
-# ── Colors / log helpers ──────────────────────────────────────────────────────
+# --- Colors / log helpers ---
 $ESC    = [char]27
 $RESET  = "$ESC[0m"
 $BOLD   = "$ESC[1m"
@@ -29,6 +29,21 @@ function HumanSize([long]$bytes) {
     return "$bytes B"
 }
 
+# PS 5.1 ConvertTo-Json produces ugly center-aligned indentation; re-indent to standard 2-space.
+function Format-Json([string]$Json) {
+    $indent = 0
+    $lines = [System.Collections.ArrayList]::new()
+    foreach ($raw in ($Json -split '\r?\n')) {
+        $line = $raw.Trim()
+        if ($line -eq '') { continue }
+        if ($line -match '^[\}\]]') { $indent = [Math]::Max(0, $indent - 1) }
+        $line = $line -replace '(?<=":)\s{2,}', ' '
+        [void]$lines.Add(('  ' * $indent) + $line)
+        if ($line -match '[\{\[]\s*$' -and $line -notmatch '[\{\[]\s*[\}\]]') { $indent++ }
+    }
+    $lines -join "`n"
+}
+
 # --- Header ---
 Write-Host ""
 Write-Host "  ${DIM}claude-status-line $([char]0x00B7) Uninstaller${RESET}"
@@ -47,20 +62,20 @@ if (Test-Path $scriptPath) {
 Write-Host ""
 
 # --- Remove from settings.json ---
-# UTF-8 without BOM — Claude Code rejects a leading BOM on settings.json.
+# UTF-8 without BOM -- Claude Code rejects a leading BOM on settings.json.
 Step "Updating Claude Code settings"
 if (Test-Path $settingsPath) {
     try {
         $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $existing.PSObject.Properties.Remove('statusLine')
 
-        $json = $existing | ConvertTo-Json -Depth 10
+        $json = Format-Json ($existing | ConvertTo-Json -Depth 10)
         $tmpPath = "$settingsPath.tmp"
         [System.IO.File]::WriteAllText($tmpPath, $json, (New-Object System.Text.UTF8Encoding $false))
         Move-Item $tmpPath $settingsPath -Force
         Ok "Removed statusLine from settings.json"
     } catch {
-        Warn "Could not parse settings.json — please remove the `"statusLine`" key manually"
+        Warn "Could not parse settings.json -- please remove the `"statusLine`" key manually"
         Info $settingsPath
     }
 } else {
@@ -142,7 +157,7 @@ if (Test-Path $settingsPath) {
             Step "Removing notification hooks"
             $utf8NoBom = New-Object System.Text.UTF8Encoding $false
             $tmpPath = "$settingsPath.tmp"
-            [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+            [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
             Move-Item $tmpPath $settingsPath -Force
             Ok "Removed notification hooks from settings.json"
             }
@@ -195,7 +210,7 @@ if (Test-Path $settingsPath) {
             Step "Removing git-refresh hook"
             $utf8NoBom = New-Object System.Text.UTF8Encoding $false
             $tmpPath = "$settingsPath.tmp"
-            [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+            [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
             Move-Item $tmpPath $settingsPath -Force
             Ok "Removed PostToolUse hook from settings.json"
         }

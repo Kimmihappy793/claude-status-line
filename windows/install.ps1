@@ -1,5 +1,5 @@
-# Claude Code Status Line — Installer for Windows
-# PowerShell 5.1+ required — checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
+# Claude Code Status Line -- Installer for Windows
+# PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
 
 $repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"
@@ -29,6 +29,33 @@ function HumanSize([long]$bytes) {
     if ($bytes -ge 1MB) { return "{0:N1} MB" -f ($bytes / 1MB) }
     if ($bytes -ge 1KB) { return "{0:N1} KB" -f ($bytes / 1KB) }
     return "$bytes B"
+}
+
+# PS 5.1 ConvertTo-Json produces ugly center-aligned indentation; re-indent to standard 2-space.
+function Format-Json([string]$Json) {
+    $indent = 0
+    $lines = [System.Collections.ArrayList]::new()
+    foreach ($raw in ($Json -split '\r?\n')) {
+        $line = $raw.Trim()
+        if ($line -eq '') { continue }
+        if ($line -match '^[\}\]]') { $indent = [Math]::Max(0, $indent - 1) }
+        $line = $line -replace '(?<=":)\s{2,}', ' '
+        [void]$lines.Add(('  ' * $indent) + $line)
+        if ($line -match '[\{\[]\s*$' -and $line -notmatch '[\{\[]\s*[\}\]]') { $indent++ }
+    }
+    $lines -join "`n"
+}
+
+function Copy-WithRetry([string]$Source, [string]$Dest, [int]$Retries = 5) {
+    for ($i = 1; $i -le $Retries; $i++) {
+        try {
+            Copy-Item $Source -Destination $Dest -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $Retries) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 
 # --- Header / banner ---
@@ -70,19 +97,25 @@ $banner = @"
 Write-Host $banner
 Write-Host ""
 Write-Host "  ${DIM}Windows Installer${RESET}"
-Write-Host "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host ""
 
 # --- Install the script ---
-# $MyInvocation.MyCommand.Path is $null when run via `irm | iex` — that's how we detect the piped case.
+# $MyInvocation.MyCommand.Path is $null when run via `irm | iex` -- that's how we detect the piped case.
 Step "Installing status line script"
 if (-not (Test-Path $claudeDir)) { New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }
 
 $myPath = $MyInvocation.MyCommand.Path
 $localScript = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "statusline.ps1" } else { $null }
 if ($localScript -and (Test-Path $localScript)) {
-    Copy-Item $localScript -Destination $scriptPath -Force
-    Ok "Copied from local repo"
+    try {
+        Copy-WithRetry $localScript $scriptPath
+        Ok "Copied from local repo"
+    } catch {
+        Err "Copy failed (file may be locked by Claude Code): $_"
+        Err "Close Claude Code and try again."
+        exit 1
+    }
 } else {
     try {
         Invoke-WebRequest -Uri "$repo/statusline.ps1" -OutFile $scriptPath -UseBasicParsing -ErrorAction Stop
@@ -97,7 +130,7 @@ Info "$scriptPath ($(HumanSize (Get-Item $scriptPath).Length))"
 Write-Host ""
 
 # --- Configure settings.json ---
-# UTF-8 without BOM — Claude Code rejects a leading BOM on settings.json.
+# UTF-8 without BOM -- Claude Code rejects a leading BOM on settings.json.
 Step "Configuring Claude Code settings"
 $cmd = "powershell -NoProfile -File `"$scriptPath`""
 $newEntry = [PSCustomObject]@{ type = "command"; command = $cmd; refreshInterval = 2 }
@@ -129,13 +162,13 @@ if (Test-Path $settingsPath) {
     $existing | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $newEntry -Force
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
     Move-Item $tmpPath $settingsPath -Force
     Ok "Updated settings.json"
 } else {
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10), $utf8NoBom)
+    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10)), $utf8NoBom)
     Move-Item $tmpPath $settingsPath -Force
     Ok "Created settings.json"
 }
@@ -146,8 +179,14 @@ Write-Host ""
 Step "Installing git-refresh hook"
 $localGitRefresh = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "git-refresh.ps1" } else { $null }
 if ($localGitRefresh -and (Test-Path $localGitRefresh)) {
-    Copy-Item $localGitRefresh -Destination $gitRefreshPath -Force
-    Ok "Copied from local repo"
+    try {
+        Copy-WithRetry $localGitRefresh $gitRefreshPath
+        Ok "Copied from local repo"
+    } catch {
+        Err "Copy failed (file may be locked by Claude Code): $_"
+        Err "Close Claude Code and try again."
+        exit 1
+    }
 } else {
     try {
         Invoke-WebRequest -Uri "$repo/git-refresh.ps1" -OutFile $gitRefreshPath -UseBasicParsing -ErrorAction Stop
@@ -223,7 +262,7 @@ if ($hasRefreshHook) {
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
     Move-Item $tmpPath $settingsPath -Force
     Ok "PostToolUse hook enabled"
 }
@@ -233,8 +272,14 @@ Write-Host ""
 Step "Installing notification script"
 $localNotify = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "notify.ps1" } else { $null }
 if ($localNotify -and (Test-Path $localNotify)) {
-    Copy-Item $localNotify -Destination $notifyPath -Force
-    Ok "Copied from local repo"
+    try {
+        Copy-WithRetry $localNotify $notifyPath
+        Ok "Copied from local repo"
+    } catch {
+        Err "Copy failed (file may be locked by Claude Code): $_"
+        Err "Close Claude Code and try again."
+        exit 1
+    }
 } else {
     try {
         Invoke-WebRequest -Uri "$repo/notify.ps1" -OutFile $notifyPath -UseBasicParsing -ErrorAction Stop
@@ -328,7 +373,7 @@ if ($hasNotifyHooks) {
 
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
         $tmpPath = "$settingsPath.tmp"
-        [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+        [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
         Move-Item $tmpPath $settingsPath -Force
         Ok "Notifications enabled"
     } else {
@@ -338,6 +383,6 @@ if ($hasNotifyHooks) {
 
 # --- Done ---
 Write-Host ""
-Write-Host "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate."
 Write-Host ""
