@@ -94,6 +94,7 @@ J_AGENT_OUT="${_jf[21]}"
 _oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
 _oc_tmt=""
 [[ -n "$J_TRANSCRIPT_PATH" && -f "$J_TRANSCRIPT_PATH" ]] && _oc_tmt=$(stat -c %Y "$J_TRANSCRIPT_PATH" 2>/dev/null)
+_oc_now=$(date +%s)
 _oc_gmt=""
 _oc_gidx="${J_GIT_CWD:-.}/.git/index"
 [[ -f "$_oc_gidx" ]] && _oc_gmt=$(stat -c %Y "$_oc_gidx" 2>/dev/null)
@@ -102,7 +103,7 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -c %Y "$_oc_sdir" 2>/dev/null)
 fi
-_oc_key="${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}"
+_oc_key="${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))"
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
     IFS= read -r _oc_cached_key < "$_oc_path"
@@ -124,6 +125,13 @@ format_tokens() {  # 1234567 -> "1.2M"; "0" for empty
     else
         printf '%d' "$n"
     fi
+}
+
+sa_ctx_for_model() {
+    case "$1" in
+        *\[1m\]*|*-1m*) echo 1000000 ;;
+        *)              echo 200000  ;;
+    esac
 }
 
 shopt -s extglob
@@ -261,8 +269,11 @@ if [[ -f "$git_index" ]]; then
     if [[ -f "$git_cache_path" ]]; then
         IFS='|' read -r gc_mt gc_branch gc_ins gc_del gc_unt < "$git_cache_path"
         if [[ "$gc_mt" == "$git_index_mt" ]]; then
-            branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
-            git_use_cache=true
+            gc_file_age=$(( _oc_now - $(stat -c %Y "$git_cache_path" 2>/dev/null || echo 0) ))
+            if (( gc_file_age < 5 )); then
+                branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
+                git_use_cache=true
+            fi
         fi
     fi
 
@@ -298,8 +309,8 @@ total_cost="$J_TOTAL_COST"
 [[ -z "$total_cost" ]] && total_cost="$J_TOTAL_COST_LEGACY"
 
 if [[ -n "$total_cost" ]]; then
-    cost_fmt=$(awk "BEGIN { printf \"\\$%.4f\", $total_cost }")
-    cost_gt=$(awk "BEGIN { print ($total_cost > 0.50) ? 1 : 0 }")
+    cost_fmt=$(awk -v c="$total_cost" 'BEGIN { printf "$%.4f", c }')
+    cost_gt=$(awk -v c="$total_cost" 'BEGIN { print (c > 0.50) ? 1 : 0 }')
     if (( cost_gt )); then cost_color="$YELLOW"; else cost_color="$GREEN"; fi
     cost_part="${cost_color}${cost_fmt}${RESET}"
 fi
@@ -330,7 +341,6 @@ session_in_tokens=0
 session_cache_write_tokens=0
 session_cache_read_tokens=0
 session_out_tokens=0
-has_session_tokens=false
 working_start_out_tokens=-1
 delta_in=0
 delta_cache_write=0
@@ -353,7 +363,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     prev_out=0
 
     if [[ -n "$cache_path" && -f "$cache_path" ]]; then  # read prev even on miss (for deltas + working_start)
-        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_has c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
+        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
         # Validate all numeric cache fields to prevent arithmetic injection
         [[ "$c_in" =~ ^-?[0-9]+$ ]] || c_in=0
         [[ "$c_out" =~ ^-?[0-9]+$ ]] || c_out=0
@@ -375,7 +385,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             claude_is_idle="$c_idle"
             session_in_tokens="$c_in"
             session_out_tokens="$c_out"
-            has_session_tokens="$c_has"
             working_start_out_tokens="$prev_working_start"
             session_cache_write_tokens="$c_cwrite"
             session_cache_read_tokens="$c_cread"
@@ -389,14 +398,25 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     if [[ "$use_cache" != true ]]; then
         if [[ -s "$transcript_path" ]]; then
-            # Real user msgs = user-type lines that aren't synthetic. Chained grep -v
-            # per-line; counting markers separately over-subtracts when they co-occur.
-            msg_count=$(grep -E '"type"[[:space:]]*:[[:space:]]*"user"' "$transcript_path" 2>/dev/null \
-                | grep -v '"toolUseResult"' \
-                | grep -Ev '"isMeta"[[:space:]]*:[[:space:]]*true' \
-                | grep -v '<command-name>' \
-                | grep -v '<local-command-stdout>' \
-                | wc -l | tr -d ' ')
+            # Single awk pass counts real user messages and sums all token fields.
+            read -r msg_count session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens < <(
+                awk '
+                    /"type"[[:space:]]*:[[:space:]]*"user"/ {
+                        if ($0 !~ /"toolUseResult"/ &&
+                            $0 !~ /"isMeta"[[:space:]]*:[[:space:]]*true/ &&
+                            $0 !~ /<command-name>/ &&
+                            $0 !~ /<local-command-stdout>/) mc++
+                    }
+                    /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
+                        s = $0
+                        t = s; sub(/.*"input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) inp += t+0
+                        t = s; sub(/.*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cw += t+0
+                        t = s; sub(/.*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cr += t+0
+                        t = s; sub(/.*"output_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) out += t+0
+                    }
+                    END { print mc+0, inp+0, cw+0, cr+0, out+0 }
+                ' "$transcript_path" 2>/dev/null
+            )
             [[ -z "$msg_count" ]] && msg_count=0
 
             # Idle vs working: scan from end, skip synthetic entries (without
@@ -425,22 +445,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 fi
             done < <(tac "$transcript_path" 2>/dev/null)
 
-            # Cumulative tokens via awk (faster than bash for large files).
-            read -r session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens has_any < <(
-                awk '
-                    /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
-                        found = 1
-                        s = $0
-                        t = s; sub(/.*"input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) inp += t+0
-                        t = s; sub(/.*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cw += t+0
-                        t = s; sub(/.*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cr += t+0
-                        t = s; sub(/.*"output_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) out += t+0
-                    }
-                    END { print inp+0, cw+0, cr+0, out+0, (found ? "true" : "false") }
-                ' "$transcript_path" 2>/dev/null
-            )
-            has_session_tokens="$has_any"
-
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
             delta_cache_write=$(( session_cache_write_tokens - prev_cache_write ))
@@ -459,9 +463,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             fi
 
             if [[ -n "$cache_path" ]]; then
-                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
                     "$CACHE_VERSION" "$transcript_mt" "$transcript_sz" "$msg_count" "$claude_is_idle" \
-                    "$session_in_tokens" "$session_out_tokens" "$has_session_tokens" \
+                    "$session_in_tokens" "$session_out_tokens" \
                     "$working_start_out_tokens" "$session_cache_write_tokens" \
                     "$session_cache_read_tokens" "$delta_in" "$delta_out" \
                     "$delta_cache_write" "$delta_cache_read" > "$cache_path" 2>/dev/null
@@ -658,10 +662,7 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
 
             sa_used=$((sa_in + sa_cw + sa_cr))
 
-            sa_ctx_size=200000
-            case "$sa_model" in
-                *\[1m\]*|*-1m*) sa_ctx_size=1000000 ;;
-            esac
+            sa_ctx_size=$(sa_ctx_for_model "$sa_model")
 
             sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
             (( sa_pct_int < 0 )) && sa_pct_int=0

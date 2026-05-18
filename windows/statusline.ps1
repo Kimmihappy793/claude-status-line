@@ -18,7 +18,6 @@ $RED     = ansi 31
 $BLUE    = ansi 34
 $WHITE   = ansi 37
 $GRAY    = ansi 90
-$SEP = "${GRAY}$([char]0x2502)${RESET}"
 # --- Read stdin + debug log ---
 # Always exit 0 — any non-zero exit makes Claude Code hide the status line entirely.
 $logPath = "$env:USERPROFILE\.claude\statusline-debug.log"
@@ -61,6 +60,47 @@ function Format-Tokens($n) {  # 1234567 -> "1.2M"
     if ($v -ge 1000)    { return ('{0:F1}K' -f ($v / 1000))    }
     return "$([int]$v)"
 }
+
+function Get-SubagentCtxSize([string]$model) {
+    if ($model -match '\[1m\]' -or $model -match '-1m\b') { return 1000000 }
+    return 200000
+}
+
+# --- Output cache: skip re-render when all inputs are unchanged ---
+$_ocSessionId = Get-Val $json @('session_id')
+$_ocPath = if ($_ocSessionId) { Join-Path $env:TEMP "statusline-oc-$_ocSessionId.txt" } else { $null }
+$_ocTmt = ''
+$_ocTranscriptPath = Get-Val $json @('transcript_path')
+if ($_ocTranscriptPath -and (Test-Path -LiteralPath $_ocTranscriptPath -ErrorAction SilentlyContinue)) {
+    $_ocTmt = (Get-Item -LiteralPath $_ocTranscriptPath).LastWriteTimeUtc.Ticks
+}
+$_ocGmt = ''
+$_ocGitCwd = Get-Val $json @('workspace','current_dir')
+if (-not $_ocGitCwd) { $_ocGitCwd = (Get-Location).Path }
+$_ocGidx = Join-Path $_ocGitCwd '.git\index'
+if (Test-Path -LiteralPath $_ocGidx -ErrorAction SilentlyContinue) {
+    $_ocGmt = (Get-Item -LiteralPath $_ocGidx -Force).LastWriteTimeUtc.Ticks
+}
+$_ocSmt = ''
+if ($_ocTranscriptPath) {
+    $_ocSdir = Join-Path (Split-Path -Parent $_ocTranscriptPath) (Join-Path ([System.IO.Path]::GetFileNameWithoutExtension($_ocTranscriptPath)) 'subagents')
+    if (Test-Path -LiteralPath $_ocSdir -ErrorAction SilentlyContinue) {
+        $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
+    }
+}
+$_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
+$_ocKey = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
+
+if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
+    $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
+    if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
+        Write-Log "output cache HIT"
+        $cachedOutput = ($ocLines | Select-Object -Skip 1) -join "`n"
+        Write-Host $cachedOutput -NoNewline
+        exit 0
+    }
+}
+
 # --- 1. CWD ---
 $sessionId = Get-Val $json @('session_id')
 $cwd = Get-Val $json @('workspace','current_dir')
@@ -79,7 +119,6 @@ if ($cwd -and $userHome -and $cwd.StartsWith($userHome, [System.StringComparison
 $cwdPart = "${CYAN}${cwd}${RESET}"
 # --- 2. Model + Context window % ---
 $modelDisplay = Get-Val $json @('model','display_name')
-$modelId      = Get-Val $json @('model','id')
 # Strip "Claude " prefix; cap at 24 chars so "Opus 4.7 (1M context)" still fits.
 $modelShort = $modelDisplay
 if ($modelShort) {
@@ -161,8 +200,11 @@ try {
         if (Test-Path -LiteralPath $gitCachePath) {
             $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
             if ($gc.Count -ge 5 -and $gc[0] -eq "$gitIndexMt") {
-                $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
-                $gitUseCache = $true
+                $cacheAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $gitCachePath -Force).LastWriteTimeUtc).TotalSeconds
+                if ($cacheAge -lt 5) {
+                    $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
+                    $gitUseCache = $true
+                }
             }
         }
 
@@ -225,7 +267,6 @@ $sessionInTokens         = [long]0
 $sessionCacheWriteTokens = [long]0
 $sessionCacheReadTokens  = [long]0
 $sessionOutTokens        = [long]0
-$hasSessionTokens = $false
 $workingStartOutTokens = [long](-1)
 $deltaIn         = [long]0
 $deltaCacheWrite = [long]0
@@ -249,28 +290,27 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
             $cacheLine = Get-Content -LiteralPath $cachePath -Raw -ErrorAction SilentlyContinue
             if ($cacheLine) {
                 $parts = $cacheLine.Trim().Split('|')
-                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 9) {
-                    $prevWorkingStart = [long]$parts[8]
+                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 8) {
+                    $prevWorkingStart = [long]$parts[7]
                 }
-                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 11) {
+                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 10) {
                     $prevIn         = [long]$parts[5]
                     $prevOut        = [long]$parts[6]
-                    $prevCacheWrite = [long]$parts[9]
-                    $prevCacheRead  = [long]$parts[10]
+                    $prevCacheWrite = [long]$parts[8]
+                    $prevCacheRead  = [long]$parts[9]
                 }
-                if (($parts.Length -ge 15) -and $parts[0] -eq $CacheVersion -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
+                if (($parts.Length -ge 14) -and $parts[0] -eq $CacheVersion -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
                     $msgCount                = [int]$parts[3]
                     $claudeIsIdle            = [bool]::Parse($parts[4])
                     $sessionInTokens         = [long]$parts[5]
                     $sessionOutTokens        = [long]$parts[6]
-                    $hasSessionTokens        = [bool]::Parse($parts[7])
                     $workingStartOutTokens   = $prevWorkingStart
-                    $sessionCacheWriteTokens = [long]$parts[9]
-                    $sessionCacheReadTokens  = [long]$parts[10]
-                    $deltaIn                 = [long]$parts[11]
-                    $deltaOut                = [long]$parts[12]
-                    $deltaCacheWrite         = [long]$parts[13]
-                    $deltaCacheRead          = [long]$parts[14]
+                    $sessionCacheWriteTokens = [long]$parts[8]
+                    $sessionCacheReadTokens  = [long]$parts[9]
+                    $deltaIn                 = [long]$parts[10]
+                    $deltaOut                = [long]$parts[11]
+                    $deltaCacheWrite         = [long]$parts[12]
+                    $deltaCacheRead          = [long]$parts[13]
                     $useCache = $true
                 }
             }
@@ -314,7 +354,6 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                 # Cumulative tokens by usage bucket across every assistant turn.
                 foreach ($ln in $lines) {
                     if ($ln -notmatch '"type"\s*:\s*"assistant"') { continue }
-                    $hasSessionTokens = $true
                     if ($ln -match '"input_tokens"\s*:\s*(\d+)')                { $sessionInTokens         += [long]$Matches[1] }
                     if ($ln -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $sessionCacheWriteTokens += [long]$Matches[1] }
                     if ($ln -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $sessionCacheReadTokens  += [long]$Matches[1] }
@@ -336,7 +375,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                     try {
                         [System.IO.File]::WriteAllText(
                             $cachePath,
-                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $hasSessionTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
+                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
                             (New-Object System.Text.UTF8Encoding $false))
                     } catch {}
                 }
@@ -521,9 +560,7 @@ if ($sessionId -and $transcriptPath) {
 
                 if ($saSr -eq 'end_turn') { continue }
                 $saUsed = $inTok + $cwTok + $crTok
-                # 200K default; 1M for Opus 4.x [1m] variants.
-                $saCtxSize = 200000
-                if ($saModel -match '\[1m\]' -or $saModel -match '-1m\b') { $saCtxSize = 1000000 }
+                $saCtxSize = Get-SubagentCtxSize $saModel
                 # Bar + label — mirrors the main context row.
                 $saPctRaw  = [Math]::Max(0.0, [Math]::Min(100.0, ($saUsed / [double]$saCtxSize) * 100))
                 $saPctInt  = [int][Math]::Round($saPctRaw)
@@ -557,7 +594,6 @@ $BoxH   = [char]0x2501
 $BoxV   = [char]0x2503
 $BoxT_L  = [char]0x2523
 $BoxT_R  = [char]0x252B
-$BoxSecH = [char]0x2501
 $BoxRowH = [char]0x2500
 # Visible width — strip ANSI escapes so color codes don't count.
 $ansiPattern = "$ESC\[[0-9;]*[a-zA-Z]"
@@ -635,5 +671,10 @@ foreach ($r in $rows) {
 $output += $botRule
 $finalOutput = $output -join "`n"
 Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length)
+if ($_ocPath) {
+    try {
+        [System.IO.File]::WriteAllText($_ocPath, "$_ocKey`n$finalOutput", (New-Object System.Text.UTF8Encoding $false))
+    } catch {}
+}
 Write-Host $finalOutput -NoNewline
 Write-Log "stdout write: OK (via Write-Host)"
