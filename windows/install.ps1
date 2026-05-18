@@ -1,4 +1,4 @@
-﻿# Claude Code Status Line — Installer for Windows
+# Claude Code Status Line — Installer for Windows
 # PowerShell 5.1+ required — checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
 
@@ -32,7 +32,6 @@ function HumanSize([long]$bytes) {
 }
 
 # --- Header / banner ---
-# NOTE: file must keep its UTF-8 BOM — without it, `iex` chokes on the here-string below (commit b7dae1f).
 Write-Host ""
 $banner = @"
  @@@@@@@  @@@        @@@@@@   @@@  @@@  @@@@@@@   @@@@@@@@

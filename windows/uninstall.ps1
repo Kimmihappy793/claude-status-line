@@ -1,4 +1,4 @@
-﻿# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
+# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
 # PowerShell 5.1+ required — checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
 
