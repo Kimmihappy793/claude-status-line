@@ -1,5 +1,6 @@
-﻿#Requires -Version 5.1
-# Claude Code Status Line — Installer for Windows
+﻿# Claude Code Status Line — Installer for Windows
+# PowerShell 5.1+ required — checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
+if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
 
 $repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"
 $claudeDir = "$env:USERPROFILE\.claude"
