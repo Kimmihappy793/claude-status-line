@@ -20,6 +20,11 @@ function Step([string]$msg)  { Write-Host "  ${CYAN}${BOLD}>>>${RESET} $msg" }
 function Ok([string]$msg)    { Write-Host "  ${GREEN}${BOLD} +${RESET} $msg" }
 function Warn([string]$msg)  { Write-Host "  ${YELLOW}${BOLD} !${RESET} $msg" }
 function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
+function HumanSize([long]$bytes) {
+    if ($bytes -ge 1MB) { return "{0:N1} MB" -f ($bytes / 1MB) }
+    if ($bytes -ge 1KB) { return "{0:N1} KB" -f ($bytes / 1KB) }
+    return "$bytes B"
+}
 
 # --- Header ---
 Write-Host ""
@@ -30,8 +35,9 @@ Write-Host ""
 # --- Remove the script ---
 Step "Removing status line script"
 if (Test-Path $scriptPath) {
+    $sz = HumanSize (Get-Item $scriptPath).Length
     Remove-Item $scriptPath -Force
-    Ok "Deleted $scriptPath"
+    Ok "Deleted $scriptPath ($sz)"
 } else {
     Warn "Script not found (already removed?)"
 }
@@ -42,24 +48,34 @@ Write-Host ""
 Step "Updating Claude Code settings"
 if (Test-Path $settingsPath) {
     try {
-        $existing = Get-Content $settingsPath -Raw | ConvertFrom-Json
-        if ($existing.statusLine) {
-            $existing.PSObject.Properties.Remove('statusLine')
-            $json = $existing | ConvertTo-Json -Depth 10
-            [System.IO.File]::WriteAllText(
-                $settingsPath,
-                $json,
-                (New-Object System.Text.UTF8Encoding $false))
-            Ok "Removed statusLine from settings.json"
-        } else {
-            Warn "No statusLine config found in settings.json"
-        }
+        $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $existing.PSObject.Properties.Remove('statusLine')
+
+        $json = $existing | ConvertTo-Json -Depth 10
+        $tmpPath = "$settingsPath.tmp"
+        [System.IO.File]::WriteAllText($tmpPath, $json, (New-Object System.Text.UTF8Encoding $false))
+        Move-Item $tmpPath $settingsPath -Force
+        Ok "Removed statusLine from settings.json"
     } catch {
         Warn "Could not parse settings.json — please remove the `"statusLine`" key manually"
         Info $settingsPath
     }
 } else {
     Warn "settings.json not found"
+}
+
+# --- Clean up temp state files ---
+Write-Host ""
+Step "Cleaning up temporary files"
+$tempFiles = Get-ChildItem -Path $env:TEMP -Filter "statusline-*.txt" -ErrorAction SilentlyContinue
+if ($tempFiles) {
+    foreach ($tf in $tempFiles) {
+        $sz = HumanSize $tf.Length
+        Remove-Item $tf.FullName -Force -ErrorAction SilentlyContinue
+        Ok "Deleted $($tf.FullName) ($sz)"
+    }
+} else {
+    Info "No temporary state files found"
 }
 
 # --- Done ---

@@ -19,6 +19,13 @@ step() { printf "  ${CYAN}${BOLD}>>>${RESET} %s\n" "$1"; }
 ok()   { printf "  ${GREEN}${BOLD} +${RESET} %s\n" "$1"; }
 warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
 info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
+file_bytes() { wc -c < "$1" | tr -d ' '; }
+human_size() {
+    local b=$1
+    if (( b >= 1048576 )); then awk -v b="$b" 'BEGIN{printf "%.1f MB",b/1048576}'
+    elif (( b >= 1024 )); then awk -v b="$b" 'BEGIN{printf "%.1f KB",b/1024}'
+    else printf "%d B" "$b"; fi
+}
 
 # --- Header ---
 echo ""
@@ -29,8 +36,9 @@ echo ""
 # --- Remove the script ---
 step "Removing status line script"
 if [ -f "$SCRIPT_PATH" ]; then
+    _sz=$(human_size $(file_bytes "$SCRIPT_PATH"))
     rm "$SCRIPT_PATH"
-    ok "Deleted $SCRIPT_PATH"
+    ok "Deleted $SCRIPT_PATH ($_sz)"
 else
     warn "Script not found (already removed?)"
 fi
@@ -40,17 +48,13 @@ echo ""
 step "Updating Claude Code settings"
 if [ -f "$SETTINGS_PATH" ]; then
     if command -v jq &>/dev/null; then
-        if jq -e '.statusLine' "$SETTINGS_PATH" &>/dev/null; then
-            tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-            if jq 'del(.statusLine)' "$SETTINGS_PATH" > "$tmp"; then
-                mv "$tmp" "$SETTINGS_PATH"
-                ok "Removed statusLine from settings.json"
-            else
-                rm -f "$tmp"
-                warn "Failed to update settings.json — remove the \"statusLine\" key manually"
-            fi
+        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+        if jq 'del(.statusLine)' "$SETTINGS_PATH" > "$tmp"; then
+            mv "$tmp" "$SETTINGS_PATH"
+            ok "Removed statusLine from settings.json"
         else
-            warn "No statusLine config found in settings.json"
+            rm -f "$tmp"
+            warn "Failed to update settings.json — remove the \"statusLine\" key manually"
         fi
     else
         warn "jq not installed — please remove the \"statusLine\" key from settings.json manually"
@@ -58,6 +62,27 @@ if [ -f "$SETTINGS_PATH" ]; then
     fi
 else
     warn "settings.json not found"
+fi
+
+# --- Clean up temp state files ---
+echo ""
+step "Cleaning up temporary files"
+removed=0
+for f in "${TMPDIR:-/tmp}"/statusline-cache-*.txt; do
+    [ -f "$f" ] || continue
+    _sz=$(human_size $(file_bytes "$f"))
+    rm -f "$f"
+    ok "Deleted $f ($_sz)"
+    removed=$((removed + 1))
+done
+if [ -f "$HOME/.claude/statusline-debug.log" ]; then
+    _sz=$(human_size $(file_bytes "$HOME/.claude/statusline-debug.log"))
+    rm -f "$HOME/.claude/statusline-debug.log"
+    ok "Deleted $HOME/.claude/statusline-debug.log ($_sz)"
+    removed=$((removed + 1))
+fi
+if (( removed == 0 )); then
+    info "No temporary state files found"
 fi
 
 # --- Done ---

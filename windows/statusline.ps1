@@ -2,6 +2,8 @@
 # Claude Code statusLine for Windows PowerShell.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
+$CacheVersion = "1"
+
 # --- ANSI helpers ---
 $ESC  = [char]27
 function ansi($code) { "$ESC[$($code)m" }
@@ -21,6 +23,7 @@ $SEP = "${GRAY}$([char]0x2502)${RESET}"
 # Always exit 0 — any non-zero exit makes Claude Code hide the status line entirely.
 $logPath = "$env:USERPROFILE\.claude\statusline-debug.log"
 function Write-Log([string]$msg) {
+    if (-not $env:STATUSLINE_DEBUG) { return }
     try { Add-Content -LiteralPath $logPath -Value ("[{0:yyyy-MM-dd HH:mm:ss}] {1}" -f (Get-Date), $msg) -Encoding utf8 } catch {}
 }
 Write-Log "=== invoked, PSVersion=$($PSVersionTable.PSVersion) PID=$PID ==="
@@ -144,45 +147,52 @@ if ($effortLevel) {
     $effortPart = "${effortColor}${effortLevel} effort${RESET}"
 }
 # --- 4. Git status ---
-# --no-optional-locks: don't touch index.lock so we never block a concurrent git op.
 $gitPart = ''
 try {
     $gitCwd = Get-Val $json @('workspace','current_dir')
     if (-not $gitCwd) { $gitCwd = (Get-Location).Path }
-    $gitDir = Join-Path $gitCwd '.git'
-    if (Test-Path -LiteralPath $gitDir) {
-        $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
-        if ($branch -and $LASTEXITCODE -eq 0) {
-            $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
-            $insertions = 0
-            $deletions  = 0
-            if ($diffStat -and $diffStat.Trim() -ne '') {
-                if ($diffStat -match '(\d+) insertion') { $insertions = [int]$Matches[1] }
-                if ($diffStat -match '(\d+) deletion')  { $deletions  = [int]$Matches[1] }
+    $gitIndex = Join-Path $gitCwd '.git\index'
+    if (Test-Path -LiteralPath $gitIndex) {
+        $gitIndexMt = (Get-Item -LiteralPath $gitIndex -Force).LastWriteTimeUtc.Ticks
+        $gitCachePath = Join-Path $env:TEMP "statusline-git-$sessionId.txt"
+        $gitUseCache = $false
+        $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0
+
+        if (Test-Path -LiteralPath $gitCachePath) {
+            $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
+            if ($gc.Count -ge 5 -and $gc[0] -eq "$gitIndexMt") {
+                $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
+                $gitUseCache = $true
             }
-            $porcelain = & git --no-optional-locks -C $gitCwd status --porcelain 2>$null
-            $untracked = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
-        } else {
-            $branch = $null
         }
-    } else {
-        $branch = $null
-    }
-    if ($branch) {
-        $isDirty = ($insertions -gt 0 -or $deletions -gt 0 -or $untracked -gt 0)
-        $branchColor = if ($isDirty) { $YELLOW } else { $GREEN }
-        $gitPart = "${branchColor}${branch}${RESET}"
-        $statParts = @()
-        if ($insertions -gt 0) { $statParts += "${GREEN}+${insertions}${RESET}" }
-        if ($deletions  -gt 0) { $statParts += "${RED}-${deletions}${RESET}" }
-        if ($untracked  -gt 0) { $statParts += "${GRAY}~${untracked}${RESET}" }
-        if ($statParts.Count -gt 0) {
-            $gitPart += ' ' + ($statParts -join ' ')
+
+        if (-not $gitUseCache) {
+            $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
+            if ($branch -and $LASTEXITCODE -eq 0) {
+                $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
+                $insertions = 0; $deletions = 0
+                if ($diffStat -and $diffStat.Trim() -ne '') {
+                    if ($diffStat -match '(\d+) insertion') { $insertions = [int]$Matches[1] }
+                    if ($diffStat -match '(\d+) deletion')  { $deletions  = [int]$Matches[1] }
+                }
+                $porcelain = & git --no-optional-locks -C $gitCwd status --porcelain 2>$null
+                $untracked = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
+            } else { $branch = $null }
+            "$gitIndexMt|$branch|$insertions|$deletions|$untracked" | Set-Content -LiteralPath $gitCachePath -Encoding utf8 -ErrorAction SilentlyContinue
+        }
+
+        if ($branch) {
+            $isDirty = ($insertions -gt 0 -or $deletions -gt 0 -or $untracked -gt 0)
+            $branchColor = if ($isDirty) { $YELLOW } else { $GREEN }
+            $gitPart = "${branchColor}${branch}${RESET}"
+            $statParts = @()
+            if ($insertions -gt 0) { $statParts += "${GREEN}+${insertions}${RESET}" }
+            if ($deletions  -gt 0) { $statParts += "${RED}-${deletions}${RESET}" }
+            if ($untracked  -gt 0) { $statParts += "${GRAY}~${untracked}${RESET}" }
+            if ($statParts.Count -gt 0) { $gitPart += ' ' + ($statParts -join ' ') }
         }
     }
-} catch {
-    $gitPart = ''
-}
+} catch { $gitPart = '' }
 # --- 5. Cost + Duration ---
 # Fallbacks to legacy top-level keys — Claude Code JSON schema has shifted between versions.
 $costPart = ''
@@ -227,6 +237,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
         # Per-session cache keyed on transcript mtime — only re-parse when it changes.
         $cachePath    = if ($sessionId) { Join-Path $env:TEMP ("statusline-cache-" + $sessionId + ".txt") } else { $null }
         $transcriptMt = (Get-Item -LiteralPath $transcriptPath).LastWriteTimeUtc.Ticks
+        $transcriptSz = (Get-Item -LiteralPath $transcriptPath).Length
         $useCache     = $false
         # Read prev values even on cache-miss so workingStartOutTokens survives invalidations.
         $prevWorkingStart = [long](-1)
@@ -238,29 +249,28 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
             $cacheLine = Get-Content -LiteralPath $cachePath -Raw -ErrorAction SilentlyContinue
             if ($cacheLine) {
                 $parts = $cacheLine.Trim().Split('|')
-                if ($parts.Length -ge 7) {
-                    $prevWorkingStart = [long]$parts[6]
+                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 9) {
+                    $prevWorkingStart = [long]$parts[8]
                 }
-                if ($parts.Length -ge 9) {
-                    $prevIn         = [long]$parts[3]
-                    $prevOut        = [long]$parts[4]
-                    $prevCacheWrite = [long]$parts[7]
-                    $prevCacheRead  = [long]$parts[8]
+                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 11) {
+                    $prevIn         = [long]$parts[5]
+                    $prevOut        = [long]$parts[6]
+                    $prevCacheWrite = [long]$parts[9]
+                    $prevCacheRead  = [long]$parts[10]
                 }
-                # Require 13-field schema with deltas; else force re-parse.
-                if (($parts.Length -ge 13) -and $parts[0] -eq "$transcriptMt") {
-                    $msgCount                = [int]$parts[1]
-                    $claudeIsIdle            = [bool]::Parse($parts[2])
-                    $sessionInTokens         = [long]$parts[3]
-                    $sessionOutTokens        = [long]$parts[4]
-                    $hasSessionTokens        = [bool]::Parse($parts[5])
+                if (($parts.Length -ge 15) -and $parts[0] -eq $CacheVersion -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
+                    $msgCount                = [int]$parts[3]
+                    $claudeIsIdle            = [bool]::Parse($parts[4])
+                    $sessionInTokens         = [long]$parts[5]
+                    $sessionOutTokens        = [long]$parts[6]
+                    $hasSessionTokens        = [bool]::Parse($parts[7])
                     $workingStartOutTokens   = $prevWorkingStart
-                    $sessionCacheWriteTokens = [long]$parts[7]
-                    $sessionCacheReadTokens  = [long]$parts[8]
-                    $deltaIn                 = [long]$parts[9]
-                    $deltaOut                = [long]$parts[10]
-                    $deltaCacheWrite         = [long]$parts[11]
-                    $deltaCacheRead          = [long]$parts[12]
+                    $sessionCacheWriteTokens = [long]$parts[9]
+                    $sessionCacheReadTokens  = [long]$parts[10]
+                    $deltaIn                 = [long]$parts[11]
+                    $deltaOut                = [long]$parts[12]
+                    $deltaCacheWrite         = [long]$parts[13]
+                    $deltaCacheRead          = [long]$parts[14]
                     $useCache = $true
                 }
             }
@@ -280,20 +290,24 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                     $_ -notmatch '<local-command-stdout>'
                 }).Count
                 # Idle vs working: latest REAL message decides. Skip synthetic user entries
-                # (tool results, isMeta, slash-command invocations/output) — otherwise running
-                # /effort leaves no following assistant end_turn and we stay stuck on "working".
+                # (isMeta, slash-command invocations/output). Track tool results to distinguish
+                # permission prompts (idle) from completed tool calls (working).
                 for ($i = $lines.Count - 1; $i -ge 0; $i--) {
                     $ln = $lines[$i]
-                    if ($ln -match '"toolUseResult"') { continue }
                     if ($ln -match '"isMeta"\s*:\s*true') { continue }
                     if ($ln -match '<command-name>') { continue }
                     if ($ln -match '<local-command-') { continue }
+                    if ($ln -match '"toolUseResult"') { continue }
                     if ($ln -match '"type"\s*:\s*"assistant"') {
                         $claudeIsIdle = ($ln -match '"stop_reason"\s*:\s*"end_turn"')
                         break
                     }
                     if ($ln -match '"type"\s*:\s*"user"') {
-                        $claudeIsIdle = $false
+                        if ($ln -match 'Request interrupted by user') {
+                            $claudeIsIdle = $true
+                        } else {
+                            $claudeIsIdle = $false
+                        }
                         break
                     }
                 }
@@ -320,10 +334,9 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                 }
                 if ($cachePath) {
                     try {
-                        # 13 fields: mtime|msgCount|idle|in|out|hasTokens|workingStart|cacheW|cacheR|dIn|dOut|dCacheW|dCacheR
                         [System.IO.File]::WriteAllText(
                             $cachePath,
-                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}" -f $transcriptMt, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $hasSessionTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
+                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $hasSessionTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
                             (New-Object System.Text.UTF8Encoding $false))
                     } catch {}
                 }
@@ -462,32 +475,55 @@ if ($sessionId -and $transcriptPath) {
                    Sort-Object LastWriteTime
         foreach ($sa in $saFiles) {
             try {
-                # Scan from end for the last assistant entry.
-                $saLines    = [System.IO.File]::ReadAllLines($sa.FullName)
-                $lastAssist = $null
-                for ($i = $saLines.Length - 1; $i -ge 0; $i--) {
-                    if ($saLines[$i] -match '"type"\s*:\s*"assistant"') { $lastAssist = $saLines[$i]; break }
+                $saAge = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) - ([DateTimeOffset]$sa.LastWriteTimeUtc).ToUnixTimeSeconds()
+                if ($saAge -gt 180) { continue }
+
+                $saMt = $sa.LastWriteTimeUtc.Ticks
+                $saCachePath = Join-Path $env:TEMP "statusline-sa-$sessionId-$($sa.BaseName).txt"
+                $saUseCache = $false
+
+                if (Test-Path -LiteralPath $saCachePath) {
+                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
+                    if ($sc.Count -ge 7 -and $sc[0] -eq "$saMt") {
+                        $saSr = $sc[1]; $inTok = [long]$sc[2]; $cwTok = [long]$sc[3]; $crTok = [long]$sc[4]
+                        $saModel = $sc[5]; $agentDisplay = $sc[6]
+                        $saUseCache = $true
+                    }
                 }
-                if (-not $lastAssist) { continue }
-                if ($lastAssist -match '"stop_reason"\s*:\s*"end_turn"') { continue }  # skip completed turns
-                $inTok = 0; $cwTok = 0; $crTok = 0
-                if ($lastAssist -match '"input_tokens"\s*:\s*(\d+)')                { $inTok = [long]$Matches[1] }
-                if ($lastAssist -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $cwTok = [long]$Matches[1] }
-                if ($lastAssist -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $crTok = [long]$Matches[1] }
+
+                if (-not $saUseCache) {
+                    # Scan from end for the last assistant entry.
+                    $saLines    = [System.IO.File]::ReadAllLines($sa.FullName)
+                    $lastAssist = $null
+                    for ($i = $saLines.Length - 1; $i -ge 0; $i--) {
+                        if ($saLines[$i] -match '"type"\s*:\s*"assistant"') { $lastAssist = $saLines[$i]; break }
+                    }
+                    if (-not $lastAssist) { continue }
+                    $saSr = ''
+                    if ($lastAssist -match '"stop_reason"\s*:\s*"([^"]*)"') { $saSr = $Matches[1] }
+                    $inTok = 0; $cwTok = 0; $crTok = 0
+                    if ($lastAssist -match '"input_tokens"\s*:\s*(\d+)')                { $inTok = [long]$Matches[1] }
+                    if ($lastAssist -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $cwTok = [long]$Matches[1] }
+                    if ($lastAssist -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $crTok = [long]$Matches[1] }
+                    # 200K default; 1M for Opus 4.x [1m] variants.
+                    $saModel = ''
+                    if ($lastAssist -match '"model"\s*:\s*"([^"]+)"') { $saModel = $Matches[1] }
+                    $agentDisplay = $sa.BaseName -replace '^agent-',''
+                    $metaPath = Join-Path $sa.Directory.FullName "$($sa.BaseName).meta.json"
+                    if (Test-Path -LiteralPath $metaPath) {
+                        try {
+                            $meta = Get-Content -LiteralPath $metaPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+                            if ($meta.agentType) { $agentDisplay = $meta.agentType }
+                        } catch {}
+                    }
+                    "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay" | Set-Content -LiteralPath $saCachePath -Encoding utf8 -ErrorAction SilentlyContinue
+                }
+
+                if ($saSr -eq 'end_turn') { continue }
                 $saUsed = $inTok + $cwTok + $crTok
                 # 200K default; 1M for Opus 4.x [1m] variants.
-                $saModel = ''
-                if ($lastAssist -match '"model"\s*:\s*"([^"]+)"') { $saModel = $Matches[1] }
                 $saCtxSize = 200000
                 if ($saModel -match '\[1m\]' -or $saModel -match '-1m\b') { $saCtxSize = 1000000 }
-                $agentDisplay = $sa.BaseName -replace '^agent-',''
-                $metaPath = Join-Path $sa.Directory.FullName "$($sa.BaseName).meta.json"
-                if (Test-Path -LiteralPath $metaPath) {
-                    try {
-                        $meta = Get-Content -LiteralPath $metaPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
-                        if ($meta.agentType) { $agentDisplay = $meta.agentType }
-                    } catch {}
-                }
                 # Bar + label — mirrors the main context row.
                 $saPctRaw  = [Math]::Max(0.0, [Math]::Min(100.0, ($saUsed / [double]$saCtxSize) * 100))
                 $saPctInt  = [int][Math]::Round($saPctRaw)

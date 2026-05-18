@@ -22,6 +22,11 @@ function Ok([string]$msg)    { Write-Host "  ${GREEN}${BOLD} +${RESET} $msg" }
 function Warn([string]$msg)  { Write-Host "  ${YELLOW}${BOLD} !${RESET} $msg" }
 function Err([string]$msg)   { Write-Host "  ${RED}${BOLD} x${RESET} $msg" }
 function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
+function HumanSize([long]$bytes) {
+    if ($bytes -ge 1MB) { return "{0:N1} MB" -f ($bytes / 1MB) }
+    if ($bytes -ge 1KB) { return "{0:N1} KB" -f ($bytes / 1KB) }
+    return "$bytes B"
+}
 
 # --- Header / banner ---
 # NOTE: file must keep its UTF-8 BOM — without it, `iex` chokes on the here-string below (commit b7dae1f).
@@ -77,10 +82,16 @@ if ($localScript -and (Test-Path $localScript)) {
     Copy-Item $localScript -Destination $scriptPath -Force
     Ok "Copied from local repo"
 } else {
-    Invoke-WebRequest -Uri "$repo/statusline.ps1" -OutFile $scriptPath
-    Ok "Downloaded from GitHub"
+    try {
+        Invoke-WebRequest -Uri "$repo/statusline.ps1" -OutFile $scriptPath -UseBasicParsing -ErrorAction Stop
+        Ok "Downloaded from GitHub"
+    } catch {
+        Err "Download failed: $_"
+        Err "Run the installer from a local clone instead."
+        exit 1
+    }
 }
-Info $scriptPath
+Info "$scriptPath ($(HumanSize (Get-Item $scriptPath).Length))"
 Write-Host ""
 
 # --- Configure settings.json ---
@@ -90,7 +101,17 @@ $cmd = "powershell -NoProfile -File `"$scriptPath`""
 $newEntry = [PSCustomObject]@{ type = "command"; command = $cmd; refreshInterval = 2 }
 
 if (Test-Path $settingsPath) {
-    $existing = Get-Content $settingsPath -Raw | ConvertFrom-Json
+    try {
+        $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Err "settings.json could not be parsed: $_"
+        exit 1
+    }
+
+    if ($null -eq $existing -or $existing -isnot [PSCustomObject]) {
+        Err "settings.json could not be parsed as a JSON object. Please check the file manually."
+        exit 1
+    }
 
     if ($existing.statusLine) {
         Write-Host ""
@@ -105,11 +126,15 @@ if (Test-Path $settingsPath) {
 
     $existing | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $newEntry -Force
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($settingsPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $tmpPath = "$settingsPath.tmp"
+    [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+    Move-Item $tmpPath $settingsPath -Force
     Ok "Updated settings.json"
 } else {
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($settingsPath, ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $tmpPath = "$settingsPath.tmp"
+    [System.IO.File]::WriteAllText($tmpPath, ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10), $utf8NoBom)
+    Move-Item $tmpPath $settingsPath -Force
     Ok "Created settings.json"
 }
 Info $settingsPath

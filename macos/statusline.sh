@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code statusLine script for macOS.
 
+CACHE_VERSION="1"
+
 if ! command -v jq &>/dev/null; then
     printf '\033[31m[statusline: jq not found — run: brew install jq]\033[0m'
     exit 0
@@ -22,7 +24,8 @@ GRAY="${ESC}[90m"
 
 # --- Debug log ---
 LOG_PATH="$HOME/.claude/statusline-debug.log"
-log_msg() {  # errors swallowed so logging never breaks the status line
+log_msg() {
+    [[ -n "$STATUSLINE_DEBUG" ]] || return 0
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_PATH" 2>/dev/null
 }
 log_msg "=== invoked, BASH_VERSION=$BASH_VERSION PID=$$ ==="
@@ -39,33 +42,95 @@ if ! printf '%s' "$raw" | jq -e '.' &>/dev/null; then
 fi
 log_msg "json parse: OK"
 
-# --- Helpers ---
-jval() {  # jq path with fallback; treats null/empty as missing
-    local result
-    result=$(printf '%s' "$raw" | jq -r "$1 // empty" 2>/dev/null)
-    if [[ -z "$result" || "$result" == "null" ]]; then
-        printf '%s' "${2:-}"
-    else
-        printf '%s' "$result"
+# --- Extract all JSON fields in one pass ---
+mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
+    (.session_id // ""),
+    (.workspace.current_dir // ""),
+    (.cwd // ""),
+    (.model.display_name // ""),
+    (.context_window.context_window_size // ""),
+    (.context_window.used_percentage // ""),
+    (.context_window.total_input_tokens // ""),
+    (.effort.level // ""),
+    (.workspace.current_dir // ""),
+    (.cost.total_cost_usd // ""),
+    (.total_cost_usd // ""),
+    (.cost.total_duration_ms // ""),
+    (.total_duration_ms // ""),
+    (.duration_ms // ""),
+    (.transcript_path // ""),
+    (.rate_limits.five_hour.used_percentage // ""),
+    (.rate_limits.five_hour.resets_at // ""),
+    (.rate_limits.seven_day.used_percentage // ""),
+    (.rate_limits.seven_day.resets_at // ""),
+    (.agent.name // ""),
+    (.context_window.current_usage.input_tokens // ""),
+    (.context_window.current_usage.output_tokens // "")
+] | .[]')
+J_SESSION_ID="${_jf[0]}"
+J_CWD="${_jf[1]}"
+J_CWD_FALLBACK="${_jf[2]}"
+J_MODEL_DISPLAY="${_jf[3]}"
+J_CTX_SIZE="${_jf[4]}"
+J_USED_PCT="${_jf[5]}"
+J_TOTAL_INPUT_TOKENS="${_jf[6]}"
+J_EFFORT_LEVEL="${_jf[7]}"
+J_GIT_CWD="${_jf[8]}"
+J_TOTAL_COST="${_jf[9]}"
+J_TOTAL_COST_LEGACY="${_jf[10]}"
+J_DURATION_MS="${_jf[11]}"
+J_DURATION_MS_L1="${_jf[12]}"
+J_DURATION_MS_L2="${_jf[13]}"
+J_TRANSCRIPT_PATH="${_jf[14]}"
+J_RATE_5H_PCT="${_jf[15]}"
+J_RATE_5H_RESETS="${_jf[16]}"
+J_RATE_7D_PCT="${_jf[17]}"
+J_RATE_7D_RESETS="${_jf[18]}"
+J_AGENT_NAME="${_jf[19]}"
+J_AGENT_IN="${_jf[20]}"
+J_AGENT_OUT="${_jf[21]}"
+
+# --- Idle-state fast path ---
+_oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
+_oc_tmt=""
+[[ -n "$J_TRANSCRIPT_PATH" && -f "$J_TRANSCRIPT_PATH" ]] && _oc_tmt=$(stat -f %m "$J_TRANSCRIPT_PATH" 2>/dev/null)
+_oc_gmt=""
+_oc_gidx="${J_GIT_CWD:-.}/.git/index"
+[[ -f "$_oc_gidx" ]] && _oc_gmt=$(stat -f %m "$_oc_gidx" 2>/dev/null)
+_oc_smt=""
+if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
+    _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
+    [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -f %m "$_oc_sdir" 2>/dev/null)
+fi
+_oc_key="${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}"
+
+if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
+    IFS= read -r _oc_cached_key < "$_oc_path"
+    if [[ "$_oc_cached_key" == "$_oc_key" ]]; then
+        sed 1d "$_oc_path"
+        exit 0
     fi
-}
+fi
 
 format_tokens() {  # 1234567 -> "1.2M"
     local n=$1
-    [[ -z "$n" ]] && { printf '0'; return; }
+    [[ -z "$n" || "$n" == "0" ]] && { printf '0'; return; }
     if (( n >= 1000000 )); then
-        awk "BEGIN { printf \"%.1fM\", $n / 1000000.0 }"
+        local whole=$((n / 1000000)) frac=$(( (n % 1000000) / 100000 ))
+        printf '%d.%dM' "$whole" "$frac"
     elif (( n >= 1000 )); then
-        awk "BEGIN { printf \"%.1fK\", $n / 1000.0 }"
+        local whole=$((n / 1000)) frac=$(( (n % 1000) / 100 ))
+        printf '%d.%dK' "$whole" "$frac"
     else
         printf '%d' "$n"
     fi
 }
 
-get_vis() {  # visible width (strips ANSI) — for box padding
-    local stripped
-    stripped=$(printf '%s' "$1" | perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g')
-    printf '%d' "${#stripped}"
+shopt -s extglob
+get_vis() {
+    local s="$1"
+    s="${s//$'\033'\[*([0-9;])m/}"
+    printf '%d' "${#s}"
 }
 
 repeat_char() {  # multi-byte safe char repeat
@@ -75,12 +140,12 @@ repeat_char() {  # multi-byte safe char repeat
 }
 
 # --- 1. CWD ---
-session_id=$(jval '.session_id')
-cwd=$(jval '.workspace.current_dir')
-[[ -z "$cwd" ]] && cwd=$(jval '.cwd')
+session_id="$J_SESSION_ID"
+cwd="$J_CWD"
+[[ -z "$cwd" ]] && cwd="$J_CWD_FALLBACK"
 [[ -z "$cwd" ]] && cwd="$PWD"
 
-if [[ "$cwd" == "$HOME"* ]]; then
+if [[ "$cwd" == "$HOME" || "$cwd" == "$HOME"/* ]]; then
     cwd="~${cwd#"$HOME"}"
 else
     IFS='/' read -ra parts <<< "$cwd"
@@ -93,7 +158,7 @@ fi
 cwd_part="${CYAN}${cwd}${RESET}"
 
 # --- 2. Model + Context window % ---
-model_display=$(jval '.model.display_name')
+model_display="$J_MODEL_DISPLAY"
 
 model_short="$model_display"
 if [[ -n "$model_short" ]]; then
@@ -103,8 +168,8 @@ else
     model_short="unknown"
 fi
 
-ctx_size=$(jval '.context_window.context_window_size')
-used_pct=$(jval '.context_window.used_percentage')
+ctx_size="$J_CTX_SIZE"
+used_pct="$J_USED_PCT"
 
 ctx_label=""
 if [[ -n "$ctx_size" ]]; then
@@ -136,7 +201,11 @@ bar_used_pct="${used_pct:-0}"
 bar_pct_int="${pct_int:-0}"
 bar_color="${pct_color}"
 [[ -z "$pct_int" ]] && bar_color="$GREEN"
-filled=$(awk "BEGIN { v = $bar_used_pct; if (v<0) v=0; if (v>100) v=100; printf \"%d\", int($bar_width * v / 100 + 0.5) }")
+bar_pct_clamped="${bar_used_pct%.*}"
+[[ -z "$bar_pct_clamped" ]] && bar_pct_clamped=0
+(( bar_pct_clamped < 0 )) && bar_pct_clamped=0
+(( bar_pct_clamped > 100 )) && bar_pct_clamped=100
+filled=$(( (bar_width * bar_pct_clamped + 50) / 100 ))
 (( filled > bar_width )) && filled=$bar_width
 (( filled < 0 )) && filled=0
 empty_count=$((bar_width - filled))
@@ -148,26 +217,20 @@ bar="${bar_color}${filled_chars}${RESET}${GRAY}${empty_chars}${RESET}"
 token_suffix=""
 if [[ -n "$ctx_size" ]]; then
     # Prefer total_input_tokens — used_percentage is rounded so derived counts jump in 10K steps on 1M windows.
-    total_input_tokens=$(jval '.context_window.total_input_tokens')
+    total_input_tokens="$J_TOTAL_INPUT_TOKENS"
     if [[ -n "$total_input_tokens" ]]; then
         used_tokens="$total_input_tokens"
     else
-        used_tokens=$(awk "BEGIN { v=$bar_used_pct; if(v<0)v=0; if(v>100)v=100; printf \"%d\", int($ctx_size * v / 100) }")
+        used_tokens=$(( ctx_size * bar_pct_clamped / 100 ))
     fi
-    if (( used_tokens >= 1000000 )); then
-        used_lbl=$(awk "BEGIN { printf \"%.1fM\", $used_tokens / 1000000.0 }")
-    elif (( used_tokens >= 1000 )); then
-        used_lbl=$(awk "BEGIN { printf \"%.1fK\", $used_tokens / 1000.0 }")
-    else
-        used_lbl="$used_tokens"
-    fi
+    used_lbl=$(format_tokens "$used_tokens")
     token_suffix=" ${GRAY}·${RESET} ${WHITE}${used_lbl}${RESET}${GRAY}/${ctx_label}${RESET}"
 fi
 
 ctx_bar_part="${bar} ${bar_color}${bar_pct_int}%${RESET}${token_suffix}"
 
 # --- 3. Reasoning effort ---
-effort_level=$(jval '.effort.level')
+effort_level="$J_EFFORT_LEVEL"
 effort_part=""
 if [[ -n "$effort_level" ]]; then
     case "$effort_level" in
@@ -182,26 +245,42 @@ if [[ -n "$effort_level" ]]; then
 fi
 
 # --- 4. Git status ---
-# --no-optional-locks avoids contention with concurrent git ops in the user's terminal.
 git_part=""
-git_cwd=$(jval '.workspace.current_dir')
+git_cwd="$J_GIT_CWD"
 [[ -z "$git_cwd" ]] && git_cwd="$PWD"
 
-git_dir="${git_cwd}/.git"
 branch=""
 insertions=0
 deletions=0
 untracked=0
 
-if [[ -d "$git_dir" ]]; then
-    branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
-    if [[ -n "$branch" ]]; then
-        diff_stat=$(git --no-optional-locks -C "$git_cwd" diff --shortstat HEAD 2>/dev/null)
-        if [[ -n "$diff_stat" ]]; then
-            [[ "$diff_stat" =~ ([0-9]+)\ insertion ]] && insertions="${BASH_REMATCH[1]}"
-            [[ "$diff_stat" =~ ([0-9]+)\ deletion ]]  && deletions="${BASH_REMATCH[1]}"
+git_index="$git_cwd/.git/index"
+if [[ -f "$git_index" ]]; then
+    git_index_mt=$(stat -f %m "$git_index" 2>/dev/null || echo 0)
+    git_cache_path="${TMPDIR:-/tmp}/statusline-git-${session_id//[^a-zA-Z0-9_-]/}.txt"
+    git_use_cache=false
+
+    if [[ -f "$git_cache_path" ]]; then
+        IFS='|' read -r gc_mt gc_branch gc_ins gc_del gc_unt < "$git_cache_path"
+        if [[ "$gc_mt" == "$git_index_mt" ]]; then
+            branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
+            git_use_cache=true
         fi
-        untracked=$(git --no-optional-locks -C "$git_cwd" status --porcelain 2>/dev/null | grep -c '^??' || true)
+    fi
+
+    if [[ "$git_use_cache" != true ]]; then
+        if git --no-optional-locks -C "$git_cwd" rev-parse --is-inside-work-tree &>/dev/null; then
+            branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+            if [[ -n "$branch" ]]; then
+                diff_stat=$(git --no-optional-locks -C "$git_cwd" diff --shortstat HEAD 2>/dev/null)
+                if [[ -n "$diff_stat" ]]; then
+                    [[ "$diff_stat" =~ ([0-9]+)\ insertion ]] && insertions="${BASH_REMATCH[1]}"
+                    [[ "$diff_stat" =~ ([0-9]+)\ deletion ]]  && deletions="${BASH_REMATCH[1]}"
+                fi
+                untracked=$(git --no-optional-locks -C "$git_cwd" status --porcelain 2>/dev/null | grep -c '^??' || true)
+            fi
+        fi
+        printf '%s|%s|%s|%s|%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" > "$git_cache_path" 2>/dev/null
     fi
 fi
 
@@ -209,7 +288,6 @@ if [[ -n "$branch" ]]; then
     is_dirty=false
     (( insertions > 0 || deletions > 0 || untracked > 0 )) && is_dirty=true
     if $is_dirty; then branch_color="$YELLOW"; else branch_color="$GREEN"; fi
-
     git_part="${branch_color}${branch}${RESET}"
     (( insertions > 0 )) && git_part+=" ${GREEN}+${insertions}${RESET}"
     (( deletions > 0 ))  && git_part+=" ${RED}-${deletions}${RESET}"
@@ -218,8 +296,8 @@ fi
 
 # --- 5. Cost + Duration ---
 cost_part=""
-total_cost=$(jval '.cost.total_cost_usd')
-[[ -z "$total_cost" ]] && total_cost=$(jval '.total_cost_usd')
+total_cost="$J_TOTAL_COST"
+[[ -z "$total_cost" ]] && total_cost="$J_TOTAL_COST_LEGACY"
 
 if [[ -n "$total_cost" ]]; then
     cost_fmt=$(awk "BEGIN { printf \"\\$%.4f\", $total_cost }")
@@ -228,12 +306,13 @@ if [[ -n "$total_cost" ]]; then
     cost_part="${cost_color}${cost_fmt}${RESET}"
 fi
 
-duration_ms=$(jval '.cost.total_duration_ms')
-[[ -z "$duration_ms" ]] && duration_ms=$(jval '.total_duration_ms')
-[[ -z "$duration_ms" ]] && duration_ms=$(jval '.duration_ms')
+duration_ms="$J_DURATION_MS"
+[[ -z "$duration_ms" ]] && duration_ms="$J_DURATION_MS_L1"
+[[ -z "$duration_ms" ]] && duration_ms="$J_DURATION_MS_L2"
 
 if [[ -n "$duration_ms" ]]; then
-    secs=$((${duration_ms%.*} / 1000))
+    secs=$(( ${duration_ms%.*} / 1000 ))
+    [[ "$secs" =~ ^[0-9]+$ ]] || secs=0
     if (( secs >= 3600 )); then
         d_str="$((secs / 3600))h$(printf '%02d' $(( (secs % 3600) / 60 )))m"
     elif (( secs >= 60 )); then
@@ -260,13 +339,14 @@ delta_cache_write=0
 delta_cache_read=0
 delta_out=0
 
-transcript_path=$(jval '.transcript_path')
+transcript_path="$J_TRANSCRIPT_PATH"
 
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     cache_path=""
-    [[ -n "$session_id" ]] && cache_path="${TMPDIR:-/tmp}/statusline-cache-${session_id}.txt"
+    [[ -n "$session_id" ]] && cache_path="${TMPDIR:-/tmp}/statusline-cache-${session_id//[^a-zA-Z0-9_-]/}.txt"
 
     transcript_mt=$(stat -f %m "$transcript_path" 2>/dev/null || echo 0)
+    transcript_sz=$(stat -f %z "$transcript_path" 2>/dev/null || echo 0)
     use_cache=false
     prev_working_start=-1
     prev_in=0
@@ -276,14 +356,24 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     # Read prior cache even on miss — needed for workingStart + deltas.
     if [[ -n "$cache_path" && -f "$cache_path" ]]; then
-        IFS='|' read -r c_mt c_msg c_idle c_in c_out c_has c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
+        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_has c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
+        # Validate all numeric cache fields to prevent arithmetic injection
+        [[ "$c_in" =~ ^-?[0-9]+$ ]] || c_in=0
+        [[ "$c_out" =~ ^-?[0-9]+$ ]] || c_out=0
+        [[ "$c_wstart" =~ ^-?[0-9]+$ ]] || c_wstart=-1
+        [[ "$c_cwrite" =~ ^-?[0-9]+$ ]] || c_cwrite=0
+        [[ "$c_cread" =~ ^-?[0-9]+$ ]] || c_cread=0
+        [[ "$c_din" =~ ^-?[0-9]+$ ]] || c_din=0
+        [[ "$c_dout" =~ ^-?[0-9]+$ ]] || c_dout=0
+        [[ "$c_dcw" =~ ^-?[0-9]+$ ]] || c_dcw=0
+        [[ "$c_dcr" =~ ^-?[0-9]+$ ]] || c_dcr=0
         [[ -n "$c_wstart" ]] && prev_working_start="$c_wstart"
         [[ -n "$c_in" ]] && prev_in="$c_in"
         [[ -n "$c_out" ]] && prev_out="$c_out"
         [[ -n "$c_cwrite" ]] && prev_cache_write="$c_cwrite"
         [[ -n "$c_cread" ]] && prev_cache_read="$c_cread"
 
-        if [[ -n "$c_dcr" && "$c_mt" == "$transcript_mt" ]]; then
+        if [[ "$c_ver" == "$CACHE_VERSION" && -n "$c_dcr" && "$c_mt" == "$transcript_mt" && "$c_sz" == "$transcript_sz" ]]; then
             msg_count="$c_msg"
             claude_is_idle="$c_idle"
             session_in_tokens="$c_in"
@@ -316,10 +406,10 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             # filtering <local-command-*> the detector stays stuck on "working" after /effort.
             claude_is_idle=true
             while IFS= read -r ln; do
-                [[ "$ln" == *"toolUseResult"* ]] && continue
                 [[ "$ln" == *'"isMeta"'* ]] && continue
                 [[ "$ln" == *'<command-name>'* ]] && continue
                 [[ "$ln" == *'<local-command-'* ]] && continue
+                [[ "$ln" == *"toolUseResult"* ]] && continue
                 if [[ "$ln" == *'"type"'*'"assistant"'* ]]; then
                     if [[ "$ln" == *'"stop_reason"'*'"end_turn"'* ]]; then
                         claude_is_idle=true
@@ -329,7 +419,11 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                     break
                 fi
                 if [[ "$ln" == *'"type"'*'"user"'* ]]; then
-                    claude_is_idle=false
+                    if [[ "$ln" == *'Request interrupted by user'* ]]; then
+                        claude_is_idle=true
+                    else
+                        claude_is_idle=false
+                    fi
                     break
                 fi
             done < <(tail -r "$transcript_path" 2>/dev/null)
@@ -367,9 +461,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 working_start_out_tokens=$session_out_tokens
             fi
 
-            if [[ -n "$cache_path" ]]; then  # 13 fields
-                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
-                    "$transcript_mt" "$msg_count" "$claude_is_idle" \
+            if [[ -n "$cache_path" ]]; then
+                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+                    "$CACHE_VERSION" "$transcript_mt" "$transcript_sz" "$msg_count" "$claude_is_idle" \
                     "$session_in_tokens" "$session_out_tokens" "$has_session_tokens" \
                     "$working_start_out_tokens" "$session_cache_write_tokens" \
                     "$session_cache_read_tokens" "$delta_in" "$delta_out" \
@@ -460,8 +554,8 @@ format_window() {  # label pct resets_at window_secs -> "5h 42% ⇡3% (1h)"
         now=$(date +%s)
         local remaining=$(( ${resets_at%.*} - now ))
         if (( remaining > 0 && remaining <= window_secs )); then
-            local delta
-            delta=$(awk "BEGIN { printf \"%.0f\", $pct - ($window_secs - $remaining) * 100.0 / $window_secs }")
+            local expected_pct=$(( (window_secs - remaining) * 100 / window_secs ))
+            local delta=$(( ${pct%.*} - expected_pct ))
             local abs_delta=${delta#-}
             if (( abs_delta >= 1 )); then
                 if (( delta > 0 )); then
@@ -480,10 +574,10 @@ format_window() {  # label pct resets_at window_secs -> "5h 42% ⇡3% (1h)"
 }
 
 rate_part=""
-five_pct=$(jval '.rate_limits.five_hour.used_percentage')
-five_res=$(jval '.rate_limits.five_hour.resets_at')
-seven_pct=$(jval '.rate_limits.seven_day.used_percentage')
-seven_res=$(jval '.rate_limits.seven_day.resets_at')
+five_pct="$J_RATE_5H_PCT"
+five_res="$J_RATE_5H_RESETS"
+seven_pct="$J_RATE_7D_PCT"
+seven_res="$J_RATE_7D_RESETS"
 
 if [[ -n "$five_pct" || -n "$seven_pct" ]]; then
     parts_5h=$(format_window '5h' "$five_pct" "$five_res" 18000)
@@ -498,7 +592,7 @@ fi
 
 # --- 7. Agent status ---
 agent_part=""
-agent_name=$(jval '.agent.name')
+agent_name="$J_AGENT_NAME"
 if [[ -n "$agent_name" ]]; then
     agent_part="${BLUE}${BOLD}${agent_name}${RESET}"
     agent_compact=""
@@ -506,8 +600,8 @@ if [[ -n "$agent_name" ]]; then
     if [[ -n "$pct_int" ]]; then
         agent_compact+="${local_sep}${pct_color}${pct_int}%${RESET}"
     fi
-    agent_in=$(jval '.context_window.current_usage.input_tokens')
-    agent_out=$(jval '.context_window.current_usage.output_tokens')
+    agent_in="$J_AGENT_IN"
+    agent_out="$J_AGENT_OUT"
     in_fmt=$(format_tokens "${agent_in:-0}")
     out_fmt=$(format_tokens "${agent_out:-0}")
     [[ -z "$in_fmt" ]] && in_fmt="0"
@@ -528,11 +622,39 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
         for sa_file in "$subagents_dir"/agent-*.jsonl; do
             [[ -f "$sa_file" ]] || continue
 
-            sa_last=$(jq -c 'select(.type == "assistant")' "$sa_file" 2>/dev/null | tail -1)
-            [[ -z "$sa_last" ]] && continue
-            sa_fields=$(printf '%s' "$sa_last" | jq -r '"\(.message.stop_reason // "")|\(.message.usage.input_tokens // 0)|\(.message.usage.cache_creation_input_tokens // 0)|\(.message.usage.cache_read_input_tokens // 0)|\(.message.model // "")"' 2>/dev/null)
-            [[ -z "$sa_fields" ]] && continue
-            IFS='|' read -r sa_sr sa_in sa_cw sa_cr sa_model <<< "$sa_fields"
+            sa_mt=$(stat -f %m "$sa_file" 2>/dev/null || echo 0)
+            sa_age=$(( $(date +%s) - sa_mt ))
+            (( sa_age > 180 )) && continue
+
+            sa_base=$(basename "$sa_file" .jsonl)
+            sa_cache_path="${TMPDIR:-/tmp}/statusline-sa-${session_id//[^a-zA-Z0-9_-]/}-${sa_base}.txt"
+            sa_use_cache=false
+
+            if [[ -f "$sa_cache_path" ]]; then
+                IFS='|' read -r sc_mt sc_sr sc_in sc_cw sc_cr sc_model sc_display < "$sa_cache_path"
+                if [[ "$sc_mt" == "$sa_mt" ]]; then
+                    sa_sr="$sc_sr"; sa_in="$sc_in"; sa_cw="$sc_cw"; sa_cr="$sc_cr"
+                    sa_model="$sc_model"; agent_display="$sc_display"
+                    sa_use_cache=true
+                fi
+            fi
+
+            if [[ "$sa_use_cache" != true ]]; then
+                sa_last=$(jq -c 'select(.type == "assistant")' "$sa_file" 2>/dev/null | tail -1)
+                [[ -z "$sa_last" ]] && continue
+                sa_fields=$(printf '%s' "$sa_last" | jq -r '"\(.message.stop_reason // "")|\(.message.usage.input_tokens // 0)|\(.message.usage.cache_creation_input_tokens // 0)|\(.message.usage.cache_read_input_tokens // 0)|\(.message.model // "")"' 2>/dev/null)
+                [[ -z "$sa_fields" ]] && continue
+                IFS='|' read -r sa_sr sa_in sa_cw sa_cr sa_model <<< "$sa_fields"
+
+                agent_display="${sa_base#agent-}"
+                sa_meta="$subagents_dir/${sa_base}.meta.json"
+                if [[ -f "$sa_meta" ]]; then
+                    meta_type=$(jq -r '.agentType // ""' "$sa_meta" 2>/dev/null)
+                    [[ -n "$meta_type" ]] && agent_display="$meta_type"
+                fi
+
+                printf '%s|%s|%s|%s|%s|%s|%s' "$sa_mt" "$sa_sr" "$sa_in" "$sa_cw" "$sa_cr" "$sa_model" "$agent_display" > "$sa_cache_path" 2>/dev/null
+            fi
 
             [[ "$sa_sr" == "end_turn" ]] && continue
 
@@ -540,24 +662,17 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
 
             sa_ctx_size=200000
             case "$sa_model" in
-                *"[1m]"*|*"-1m"*) sa_ctx_size=1000000 ;;
+                *\[1m\]*|*-1m*) sa_ctx_size=1000000 ;;
             esac
 
-            sa_base=$(basename "$sa_file" .jsonl)
-            sa_meta="$subagents_dir/${sa_base}.meta.json"
-            agent_display="${sa_base#agent-}"
-            if [[ -f "$sa_meta" ]]; then
-                meta_type=$(jq -r '.agentType // ""' "$sa_meta" 2>/dev/null)
-                [[ -n "$meta_type" ]] && agent_display="$meta_type"
-            fi
-
-            sa_pct_raw=$(awk "BEGIN { p = $sa_used * 100.0 / $sa_ctx_size; if (p<0) p=0; if (p>100) p=100; print p }")
-            sa_pct_int=$(printf '%.0f' "$sa_pct_raw")
+            sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
+            (( sa_pct_int < 0 )) && sa_pct_int=0
+            (( sa_pct_int > 100 )) && sa_pct_int=100
             if   (( sa_pct_int >= 85 )); then sa_color="$RED"
             elif (( sa_pct_int >= 60 )); then sa_color="$YELLOW"
             else                              sa_color="$GREEN"
             fi
-            sa_filled=$(awk "BEGIN { printf \"%d\", int($bar_width * $sa_pct_raw / 100 + 0.5) }")
+            sa_filled=$(( (bar_width * sa_pct_int + 50) / 100 ))
             (( sa_filled > bar_width )) && sa_filled=$bar_width
             (( sa_filled < 0 )) && sa_filled=0
             sa_empty=$((bar_width - sa_filled))
@@ -565,15 +680,8 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
             sa_empty_chars=$(repeat_char "░" "$sa_empty")
             sa_bar="${sa_color}${sa_filled_chars}${RESET}${GRAY}${sa_empty_chars}${RESET}"
 
-            if   (( sa_used >= 1000000 )); then sa_used_lbl=$(awk "BEGIN { printf \"%.1fM\", $sa_used / 1000000.0 }")
-            elif (( sa_used >= 1000 )); then    sa_used_lbl=$(awk "BEGIN { printf \"%.1fK\", $sa_used / 1000.0 }")
-            else                                sa_used_lbl="$sa_used"
-            fi
-            if (( sa_ctx_size >= 1000000 )); then
-                sa_ctx_lbl=$(awk "BEGIN { printf \"%.0fM\", $sa_ctx_size / 1000000.0 }")
-            else
-                sa_ctx_lbl=$(awk "BEGIN { printf \"%.0fK\", $sa_ctx_size / 1000.0 }")
-            fi
+            sa_used_lbl=$(format_tokens "$sa_used")
+            sa_ctx_lbl=$(format_tokens "$sa_ctx_size")
 
             sa_sep="  ${GRAY}·${RESET}  "
             sa_working="${YELLOW}○ working${RESET}"
@@ -680,5 +788,8 @@ done
 output+=$'\n'"$bot_rule"
 
 log_msg "about to write: chars=${#output}"
+if [[ -n "$J_SESSION_ID" ]]; then
+    printf '%s\n%s' "$_oc_key" "$output" > "$_oc_path" 2>/dev/null
+fi
 printf '%s' "$output"
 log_msg "stdout write: OK"

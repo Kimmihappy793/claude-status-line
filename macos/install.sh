@@ -16,13 +16,19 @@ GREEN=$'\033[32m'
 YELLOW=$'\033[33m'
 RED=$'\033[31m'
 GRAY=$'\033[90m'
-WHITE=$'\033[37m'
 
 step() { printf "  ${CYAN}${BOLD}>>>${RESET} %s\n" "$1"; }
 ok()   { printf "  ${GREEN}${BOLD} +${RESET} %s\n" "$1"; }
 warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
 err()  { printf "  ${RED}${BOLD} x${RESET} %s\n" "$1"; }
 info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
+file_bytes() { wc -c < "$1" | tr -d ' '; }
+human_size() {
+    local b=$1
+    if (( b >= 1048576 )); then awk -v b="$b" 'BEGIN{printf "%.1f MB",b/1048576}'
+    elif (( b >= 1024 )); then awk -v b="$b" 'BEGIN{printf "%.1f KB",b/1024}'
+    else printf "%d B" "$b"; fi
+}
 
 # --- Header ---
 echo ""
@@ -91,18 +97,21 @@ echo ""
 # --- Install the script ---
 step "Installing status line script"
 mkdir -p "$CLAUDE_DIR"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/statusline.sh" ]; then
-    cp "$SCRIPT_DIR/statusline.sh" "$SCRIPT_PATH"
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]}" && -f "${BASH_SOURCE[0]}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/statusline.sh" ]]; then
+    tmp=$(mktemp "$CLAUDE_DIR/statusline.XXXXXX")
+    cp "$SCRIPT_DIR/statusline.sh" "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; exit 1; }
     ok "Copied from local repo"
 else
     tmp=$(mktemp "$CLAUDE_DIR/statusline.XXXXXX")
-    # Atomic rename so a failed curl never leaves a broken script.
     curl -fsSL "$REPO/statusline.sh" -o "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; exit 1; }
     ok "Downloaded from GitHub"
 fi
 chmod +x "$SCRIPT_PATH"
-info "$SCRIPT_PATH"
+info "$SCRIPT_PATH ($(human_size $(file_bytes "$SCRIPT_PATH")))"
 echo ""
 
 # --- Configure settings.json ---
@@ -130,8 +139,15 @@ if [ -f "$SETTINGS_PATH" ]; then
         exit 1
     fi
 else
-    echo "$STATUSLINE_ENTRY" | jq '.' > "$SETTINGS_PATH"
-    ok "Created settings.json"
+    tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+    if echo "$STATUSLINE_ENTRY" | jq '.' > "$tmp"; then
+        mv "$tmp" "$SETTINGS_PATH"
+        ok "Created settings.json"
+    else
+        rm -f "$tmp"
+        err "Failed to create settings.json (jq error)"
+        exit 1
+    fi
 fi
 info "$SETTINGS_PATH"
 
