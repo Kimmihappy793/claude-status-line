@@ -110,7 +110,7 @@ else
     if [[ -n "$PKG_MGR" ]]; then
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Install jq via ${PKG_MGR}? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            install_jq "$PKG_MGR"
+            install_jq "$PKG_MGR" || { err "Failed to install jq via $PKG_MGR"; exit 1; }
             ok "jq installed"
         else
             err "Please install jq manually: https://jqlang.github.io/jq/download/"
@@ -336,7 +336,7 @@ else
 fi
 
 # Apply sound/visual choices to config
-if [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
+if [[ -n "$ENABLE_SOUND" ]] && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
     _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
     _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
     tmp=$(mktemp "$NOTIFY_CONFIG_PATH.XXXXXX")

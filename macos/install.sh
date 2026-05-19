@@ -82,7 +82,7 @@ else
     if command -v brew &>/dev/null; then
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Install jq via Homebrew? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            brew install jq
+            brew install jq || { err "Failed to install jq via Homebrew"; exit 1; }
             ok "jq installed"
         else
             err "Please install jq manually: https://jqlang.github.io/jq/download/"
@@ -290,7 +290,7 @@ else
 fi
 
 # Apply sound/visual choices to config
-if [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
+if [[ -n "$ENABLE_SOUND" ]] && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
     _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
     _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
     tmp=$(mktemp "$NOTIFY_CONFIG_PATH.XXXXXX")
