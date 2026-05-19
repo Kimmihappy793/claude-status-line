@@ -536,7 +536,7 @@ if ($sessionId -and $transcriptPath) {
                 $saUseCache = $false
 
                 if (Test-Path -LiteralPath $saCachePath) {
-                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
+                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
                     if ($sc.Count -ge 7 -and $sc[0] -eq "$saMt") {
                         $saSr = $sc[1]; $inTok = [long]$sc[2]; $cwTok = [long]$sc[3]; $crTok = [long]$sc[4]
                         $saModel = $sc[5]; $agentDisplay = $sc[6]

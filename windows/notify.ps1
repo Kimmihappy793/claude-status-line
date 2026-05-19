@@ -37,17 +37,21 @@ if (Test-Path $configPath) {
     Write-Log "no config, using defaults"
 }
 
-# --- Sound dispatch ---
+# --- Resolve sound file (played after visual so toast appears instantly) ---
+$soundPath = $null
 if ($soundEnabled) {
-    switch ($Event) {
-        'permission'       { [System.Media.SystemSounds]::Exclamation.Play() }
-        'stop'             { [System.Media.SystemSounds]::Asterisk.Play() }
-        'compaction_start' { [System.Media.SystemSounds]::Exclamation.Play() }
-        'compaction_done'  { [System.Media.SystemSounds]::Asterisk.Play() }
-        'rate_limit'       { [System.Media.SystemSounds]::Hand.Play() }
-        'context_high'     { [System.Media.SystemSounds]::Hand.Play() }
+    $soundFile = switch ($Event) {
+        'permission'       { 'Windows Exclamation.wav' }
+        'stop'             { 'chimes.wav' }
+        'compaction_start' { 'Windows Battery Low.wav' }
+        'compaction_done'  { 'Windows Error.wav' }
+        'rate_limit'       { 'Windows Battery Critical.wav' }
+        'context_high'     { 'Windows Battery Critical.wav' }
     }
-    Write-Log "sound dispatched"
+    if ($soundFile) {
+        $resolved = Join-Path "$env:SystemRoot\Media" $soundFile
+        if (Test-Path -LiteralPath $resolved) { $soundPath = $resolved }
+    }
 }
 
 # --- Visual dispatch (BurntToast) ---
@@ -72,6 +76,12 @@ if ($visualEnabled) {
                                 default { $null }
                             }
                             if ($detail) {
+                                if ($toolName -in @('Edit','Write','Read')) {
+                                    $projRoot = $PWD.Path.TrimEnd('\')
+                                    if ($detail.StartsWith($projRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                                        $detail = $detail.Substring($projRoot.Length + 1)
+                                    }
+                                }
                                 if ($detail.Length -gt 80) { $detail = $detail.Substring(0, 80) }
                                 $permMsg = "${toolName}: ${detail}"
                             } else {
@@ -82,7 +92,7 @@ if ($visualEnabled) {
                 }
                 $permMsg
             }
-            'stop'             { 'Task complete' }
+            'stop'             { 'Finished working' }
             'compaction_start' { 'Compacting context...' }
             'compaction_done'  { 'Context compacted' }
             'rate_limit'       { "Rate limit at ${Value}%" }
@@ -104,6 +114,16 @@ if ($visualEnabled) {
             }
         }
     }
+}
+
+# --- Sound dispatch (after visual so toast appears instantly) ---
+if ($soundPath) {
+    $player = New-Object System.Media.SoundPlayer $soundPath
+    $player.PlaySync()
+    Write-Log "sound dispatched"
+} elseif ($soundEnabled) {
+    [System.Media.SystemSounds]::Asterisk.Play()
+    Write-Log "sound dispatched (fallback)"
 }
 
 exit 0

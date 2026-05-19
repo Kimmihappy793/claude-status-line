@@ -80,6 +80,11 @@ if [[ "$VISUAL" == true ]]; then
                             Edit|Write|Read) _detail=$(printf '%s' "$STDIN" | jq -r '.tool_input.file_path // empty' 2>/dev/null) ;;
                         esac
                         if [[ -n "$_detail" ]]; then
+                            case "$_tool" in
+                                Edit|Write|Read)
+                                    case "$_detail" in "$PWD"/*) _detail="${_detail#$PWD/}" ;; esac
+                                    ;;
+                            esac
                             _detail="${_detail:0:80}"
                             MSG="${_tool}: ${_detail}"
                         else
@@ -88,7 +93,7 @@ if [[ "$VISUAL" == true ]]; then
                     fi
                 fi
                 ;;
-            stop)             MSG="Task complete" ;;
+            stop)             MSG="Finished working" ;;
             compaction_start) MSG="Compacting context..." ;;
             compaction_done)  MSG="Context compacted" ;;
             rate_limit)       MSG="Rate limit at ${VALUE}%" ;;
