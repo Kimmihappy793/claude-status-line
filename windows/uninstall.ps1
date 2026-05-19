@@ -93,6 +93,14 @@ if (Test-Path $notifyPath) {
     Info "Notification script not found (not installed)"
 }
 
+# --- Remove notification config ---
+$notifyConfigPath = "$claudeDir\notify-config.json"
+if (Test-Path $notifyConfigPath) {
+    $sz = HumanSize (Get-Item $notifyConfigPath).Length
+    Remove-Item $notifyConfigPath -Force
+    Ok "Deleted $notifyConfigPath ($sz)"
+}
+
 # --- Remove git-refresh script ---
 if (Test-Path $gitRefreshPath) {
     $sz = HumanSize (Get-Item $gitRefreshPath).Length
@@ -108,7 +116,7 @@ if (Test-Path $settingsPath) {
         $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $hasNotifyHooks = $false
         if ($existing.hooks) {
-            foreach ($eventName in @('PermissionRequest', 'Stop')) {
+            foreach ($eventName in @('PermissionRequest', 'Stop', 'PreCompact', 'PostCompact')) {
                 $eventHooks = $existing.hooks.$eventName
                 if ($eventHooks) {
                     foreach ($entry in $eventHooks) {
@@ -127,7 +135,7 @@ if (Test-Path $settingsPath) {
             }
         }
         if ($hasNotifyHooks) {
-            foreach ($eventName in @('PermissionRequest', 'Stop')) {
+            foreach ($eventName in @('PermissionRequest', 'Stop', 'PreCompact', 'PostCompact')) {
                 $eventHooks = $existing.hooks.$eventName
                 if ($eventHooks) {
                     $kept = [System.Collections.ArrayList]::new()
@@ -222,7 +230,9 @@ if (Test-Path $settingsPath) {
 # --- Clean up temp state files ---
 Write-Host ""
 Step "Cleaning up temporary files"
-$tempFiles = Get-ChildItem -Path $env:TEMP -Filter "statusline-*.txt" -ErrorAction SilentlyContinue
+$tempFiles = @()
+$tempFiles += @(Get-ChildItem -Path $env:TEMP -Filter "statusline-*.txt" -ErrorAction SilentlyContinue)
+$tempFiles += @(Get-ChildItem -Path $env:TEMP -Filter "statusline-*.json" -ErrorAction SilentlyContinue)
 if ($tempFiles) {
     foreach ($tf in $tempFiles) {
         $sz = HumanSize $tf.Length

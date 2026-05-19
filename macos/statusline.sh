@@ -104,7 +104,7 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -f %m "$_oc_sdir" 2>/dev/null)
 fi
-_oc_key="${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))"
+_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | cksum)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
     IFS= read -r _oc_cached_key < "$_oc_path"
@@ -567,7 +567,7 @@ format_window() {  # label pct resets_at window_secs -> "5h 42% ⇡3% (1h)"
     fi
 
     local burn_part="" reset_part=""
-    if [[ -n "$resets_at" ]]; then
+    if [[ -n "$resets_at" && "${resets_at%.*}" =~ ^[0-9]+$ ]]; then
         local now
         now=$(date +%s)
         local remaining=$(( ${resets_at%.*} - now ))
@@ -653,6 +653,9 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
                 if [[ "$sc_mt" == "$sa_mt" ]]; then
                     sa_sr="$sc_sr"; sa_in="$sc_in"; sa_cw="$sc_cw"; sa_cr="$sc_cr"
                     sa_model="$sc_model"; agent_display="$sc_display"
+                    [[ "$sa_in" =~ ^[0-9]+$ ]] || sa_in=0
+                    [[ "$sa_cw" =~ ^[0-9]+$ ]] || sa_cw=0
+                    [[ "$sa_cr" =~ ^[0-9]+$ ]] || sa_cr=0
                     sa_use_cache=true
                 fi
             fi

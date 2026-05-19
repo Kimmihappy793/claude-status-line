@@ -89,7 +89,8 @@ if ($_ocTranscriptPath) {
     }
 }
 $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
-$_ocKey = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
+$_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
+$_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_ocKeyInput))).Replace('-','')
 
 if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
     $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
@@ -193,7 +194,8 @@ try {
     $gitIndex = Join-Path $gitCwd '.git\index'
     if (Test-Path -LiteralPath $gitIndex) {
         $gitIndexMt = (Get-Item -LiteralPath $gitIndex -Force).LastWriteTimeUtc.Ticks
-        $gitCachePath = Join-Path $env:TEMP "statusline-git-$sessionId.txt"
+        $safeSessionId = $sessionId -replace '[^a-zA-Z0-9_-]', ''
+        $gitCachePath = Join-Path $env:TEMP "statusline-git-$safeSessionId.txt"
         $gitUseCache = $false
         $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
 

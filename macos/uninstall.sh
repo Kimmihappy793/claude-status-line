@@ -40,7 +40,7 @@ echo ""
 step "Removing status line script"
 if [ -f "$SCRIPT_PATH" ]; then
     _sz=$(human_size $(file_bytes "$SCRIPT_PATH"))
-    rm "$SCRIPT_PATH"
+    rm -f "$SCRIPT_PATH"
     ok "Deleted $SCRIPT_PATH ($_sz)"
 else
     warn "Script not found (already removed?)"
@@ -72,16 +72,24 @@ echo ""
 step "Removing notification script"
 if [ -f "$NOTIFY_PATH" ]; then
     _sz=$(human_size $(file_bytes "$NOTIFY_PATH"))
-    rm "$NOTIFY_PATH"
+    rm -f "$NOTIFY_PATH"
     ok "Deleted $NOTIFY_PATH ($_sz)"
 else
     info "Notification script not found (not installed)"
 fi
 
+# --- Remove notification config ---
+NOTIFY_CONFIG_PATH="$CLAUDE_DIR/notify-config.json"
+if [ -f "$NOTIFY_CONFIG_PATH" ]; then
+    _sz=$(human_size $(file_bytes "$NOTIFY_CONFIG_PATH"))
+    rm -f "$NOTIFY_CONFIG_PATH"
+    ok "Deleted $NOTIFY_CONFIG_PATH ($_sz)"
+fi
+
 # --- Remove git-refresh script ---
 if [ -f "$GIT_REFRESH_PATH" ]; then
     _sz=$(human_size $(file_bytes "$GIT_REFRESH_PATH"))
-    rm "$GIT_REFRESH_PATH"
+    rm -f "$GIT_REFRESH_PATH"
     ok "Deleted $GIT_REFRESH_PATH ($_sz)"
 else
     info "Git-refresh script not found (not installed)"
@@ -90,7 +98,7 @@ fi
 # --- Remove notification hooks ---
 if [ -f "$SETTINGS_PATH" ] && command -v jq &>/dev/null; then
     if jq -e '
-      (.hooks.PermissionRequest // []) + (.hooks.Stop // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
+      (.hooks.PermissionRequest // []) + (.hooks.Stop // []) + (.hooks.PreCompact // []) + (.hooks.PostCompact // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
     ' "$SETTINGS_PATH" &>/dev/null; then
         echo ""
         step "Removing notification hooks"
@@ -101,6 +109,12 @@ if [ -f "$SETTINGS_PATH" ] && command -v jq &>/dev/null; then
           else . end) |
           (if .hooks.Stop then
             .hooks.Stop |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+          else . end) |
+          (if .hooks.PreCompact then
+            .hooks.PreCompact |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+          else . end) |
+          (if .hooks.PostCompact then
+            .hooks.PostCompact |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
           else . end) |
           (if .hooks then .hooks |= with_entries(select(.value | length > 0)) else . end) |
           (if .hooks and (.hooks | keys | length == 0) then del(.hooks) else . end)
@@ -142,7 +156,7 @@ fi
 echo ""
 step "Cleaning up temporary files"
 removed=0
-for f in "${TMPDIR:-/tmp}"/statusline-cache-*.txt; do
+for f in "${TMPDIR:-/tmp}"/statusline-*.txt "${TMPDIR:-/tmp}"/statusline-*.json; do
     [ -f "$f" ] || continue
     _sz=$(human_size $(file_bytes "$f"))
     rm -f "$f"

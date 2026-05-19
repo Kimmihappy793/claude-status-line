@@ -94,9 +94,9 @@ if ($visualEnabled) {
                 Import-Module BurntToast -ErrorAction SilentlyContinue
                 $iconPath = "$env:USERPROFILE\.claude\claude-icon.png"
                 if (Test-Path $iconPath) {
-                    New-BurntToastNotification -Text "Claude Code", $msg -AppLogo $iconPath -ErrorAction SilentlyContinue
+                    New-BurntToastNotification -Text "Claude Code", $msg -AppLogo $iconPath -Silent -ErrorAction SilentlyContinue
                 } else {
-                    New-BurntToastNotification -Text "Claude Code", $msg -ErrorAction SilentlyContinue
+                    New-BurntToastNotification -Text "Claude Code", $msg -Silent -ErrorAction SilentlyContinue
                 }
                 Write-Log "visual dispatched: $msg"
             } catch {
