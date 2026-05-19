@@ -6,18 +6,19 @@ $CacheVersion = "1"
 
 # --- ANSI helpers ---
 $ESC  = [char]27
-function ansi($code) { "$ESC[$($code)m" }
-$RESET   = ansi 0
-$DIM     = ansi 2
-$BOLD    = ansi 1
-$CYAN    = ansi 36
-$MAGENTA = ansi 35
-$YELLOW  = ansi 33
-$GREEN   = ansi 32
-$RED     = ansi 31
-$BLUE    = ansi 34
-$WHITE   = ansi 37
-$GRAY    = ansi 90
+function Ansi($code) { "$ESC[$($code)m" }
+$RESET   = Ansi 0
+$DIM     = Ansi 2
+$BOLD    = Ansi 1
+$CYAN    = Ansi 36
+$MAGENTA = Ansi 35
+$YELLOW  = Ansi 33
+$GREEN   = Ansi 32
+$RED     = Ansi 31
+$BLUE    = Ansi 34
+$WHITE   = Ansi 37
+$GRAY    = Ansi 90
+$BAR_EMPTY = Ansi '38;5;242'
 # --- Read stdin + debug log ---
 # Always exit 0 — any non-zero exit makes Claude Code hide the status line entirely.
 $logPath = "$env:USERPROFILE\.claude\statusline-debug.log"
@@ -40,7 +41,8 @@ try {
 # Catch-all: degrade gracefully on any unhandled error below.
 trap {
     Write-Log ("UNHANDLED: " + $_.Exception.Message + " @ " + $_.InvocationInfo.PositionMessage)
-    [Console]::Write("${RED}[statusline: error - see statusline-debug.log]${RESET}")
+    $_dbgHint = if ($env:STATUSLINE_DEBUG) { "see statusline-debug.log" } else { "set STATUSLINE_DEBUG=1 for details" }
+    [Console]::Write("${RED}[statusline: error - $_dbgHint]${RESET}")
     exit 0
 }
 # --- Helpers ---
@@ -53,11 +55,19 @@ function Get-Val($obj, [string[]]$path, $default = $null) {  # dotted-path looku
     if ($null -eq $cur) { return $default }
     return $cur
 }
-function Format-Tokens($n) {  # 1234567 -> "1.2M"
+function Format-Tokens($n) {  # 1234567 -> "1.2M"; "0" for empty
     if ($null -eq $n) { return $null }
     $v = [double]$n
-    if ($v -ge 1000000) { return ('{0:F1}M' -f ($v / 1000000)) }
-    if ($v -ge 1000)    { return ('{0:F1}K' -f ($v / 1000))    }
+    if ($v -ge 1000000) {
+        $w = [int][Math]::Truncate($v / 1000000)
+        $f = [int][Math]::Truncate(($v % 1000000) / 100000)
+        return "$w.${f}M"
+    }
+    if ($v -ge 1000) {
+        $w = [int][Math]::Truncate($v / 1000)
+        $f = [int][Math]::Truncate(($v % 1000) / 100)
+        return "$w.${f}K"
+    }
     return "$([int]$v)"
 }
 
@@ -68,7 +78,8 @@ function Get-SubagentCtxSize([string]$model) {
 
 # --- Output cache: skip re-render when all inputs are unchanged ---
 $_ocSessionId = Get-Val $json @('session_id')
-$_ocPath = if ($_ocSessionId) { Join-Path $env:TEMP "statusline-oc-$_ocSessionId.txt" } else { $null }
+$_ocSafeId = if ($_ocSessionId) { $_ocSessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
+$_ocPath = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-oc-$_ocSafeId.txt" } else { $null }
 $_ocTmt = ''
 $_ocTranscriptPath = Get-Val $json @('transcript_path')
 if ($_ocTranscriptPath -and (Test-Path -LiteralPath $_ocTranscriptPath -ErrorAction SilentlyContinue)) {
@@ -149,13 +160,14 @@ $rawPct     = if ($null -ne $usedPct) { [double]$usedPct } else { 0 }
 $pctClamped = [Math]::Max(0.0, [Math]::Min(100.0, $rawPct))
 $barPctInt  = if ($null -ne $pctInt)  { $pctInt }   else { 0 }
 $barColor   = if ($null -ne $pctInt)  { $pctColor } else { $GREEN }
-$filled     = [int][Math]::Round($barWidth * $pctClamped / 100)
+$barPctTrunc = [int][Math]::Truncate($pctClamped)
+$filled      = [int][Math]::Truncate(($barWidth * $barPctTrunc + 50) / 100)
 if ($filled -lt 0) { $filled = 0 }
 if ($filled -gt $barWidth) { $filled = $barWidth }
 $emptyCount = $barWidth - $filled
 $filledChars = if ($filled -gt 0)     { [string]([char]0x2588) * $filled }     else { '' }
 $emptyChars  = if ($emptyCount -gt 0) { [string]([char]0x2591) * $emptyCount } else { '' }
-$bar = "${barColor}${filledChars}${RESET}${GRAY}${emptyChars}${RESET}"
+$bar = "${barColor}${filledChars}${RESET}${BAR_EMPTY}${emptyChars}${RESET}"
 $tokenSuffix = ''
 if ($ctxSize) {
     # Prefer total_input_tokens (full precision); used_percentage is integer-rounded, so on a
@@ -231,7 +243,7 @@ try {
                 }
                 $stash = @(& git --no-optional-locks -C $gitCwd stash list 2>$null).Count
             } else { $branch = $null }
-            "$gitIndexMt|$branch|$insertions|$deletions|$untracked|$ahead|$behind|$stash" | Set-Content -LiteralPath $gitCachePath -Encoding utf8 -ErrorAction SilentlyContinue
+            try { [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt|$branch|$insertions|$deletions|$untracked|$ahead|$behind|$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {}
         }
 
         if ($branch) {
@@ -290,7 +302,7 @@ $transcriptPath = Get-Val $json @('transcript_path')
 if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction SilentlyContinue)) {
     try {
         # Per-session cache keyed on transcript mtime — only re-parse when it changes.
-        $cachePath    = if ($sessionId) { Join-Path $env:TEMP ("statusline-cache-" + $sessionId + ".txt") } else { $null }
+        $cachePath    = if ($_ocSafeId) { Join-Path $env:TEMP ("statusline-cache-" + $_ocSafeId + ".txt") } else { $null }
         $transcriptMt = (Get-Item -LiteralPath $transcriptPath).LastWriteTimeUtc.Ticks
         $transcriptSz = (Get-Item -LiteralPath $transcriptPath).Length
         $useCache     = $false
@@ -469,7 +481,7 @@ function Format-Window([string]$label, $pctVal, $resetsAt, [int]$windowSecs) {
             $expectedPct = ($windowSecs - $remaining) * 100.0 / $windowSecs
             $delta = $pct - $expectedPct
             if ([Math]::Abs($delta) -ge 1) {
-                $burnInt = [int][Math]::Round([Math]::Abs($delta))
+                $burnInt = [int][Math]::Truncate([Math]::Abs($delta))
                 if ($delta -gt 0) {
                     $burnPart = " ${RED}$([char]0x21E1)${burnInt}%${RESET}"
                 } else {
@@ -525,14 +537,14 @@ if ($sessionId -and $transcriptPath) {
     $subagentsDir = Join-Path $projectDir (Join-Path $sessionBase 'subagents')
     if (Test-Path -LiteralPath $subagentsDir) {
         $saFiles = Get-ChildItem -LiteralPath $subagentsDir -Filter 'agent-*.jsonl' -ErrorAction SilentlyContinue |
-                   Sort-Object LastWriteTime
+                   Sort-Object Name
         foreach ($sa in $saFiles) {
             try {
                 $saAge = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) - ([DateTimeOffset]$sa.LastWriteTimeUtc).ToUnixTimeSeconds()
                 if ($saAge -gt 180) { continue }
 
                 $saMt = $sa.LastWriteTimeUtc.Ticks
-                $saCachePath = Join-Path $env:TEMP "statusline-sa-$sessionId-$($sa.BaseName).txt"
+                $saCachePath = Join-Path $env:TEMP "statusline-sa-$_ocSafeId-$($sa.BaseName).txt"
                 $saUseCache = $false
 
                 if (Test-Path -LiteralPath $saCachePath) {
@@ -569,7 +581,7 @@ if ($sessionId -and $transcriptPath) {
                             if ($meta.agentType) { $agentDisplay = $meta.agentType }
                         } catch {}
                     }
-                    "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay" | Set-Content -LiteralPath $saCachePath -Encoding utf8 -ErrorAction SilentlyContinue
+                    try { [System.IO.File]::WriteAllText($saCachePath, "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
 
                 if ($saSr -eq 'end_turn') { continue }
@@ -577,14 +589,15 @@ if ($sessionId -and $transcriptPath) {
                 $saCtxSize = Get-SubagentCtxSize $saModel
                 # Bar + label — mirrors the main context row.
                 $saPctRaw  = [Math]::Max(0.0, [Math]::Min(100.0, ($saUsed / [double]$saCtxSize) * 100))
-                $saPctInt  = [int][Math]::Round($saPctRaw)
+                $saPctInt  = [int][Math]::Truncate($saPctRaw)
                 $saColor   = if ($saPctInt -ge 85) { $RED } elseif ($saPctInt -ge 60) { $YELLOW } else { $GREEN }
-                $saFilled  = [int][Math]::Round($barWidth * $saPctRaw / 100)
+                $saPctTrunc = [int][Math]::Truncate($saPctRaw)
+                $saFilled  = [int][Math]::Truncate(($barWidth * $saPctTrunc + 50) / 100)
                 if ($saFilled -lt 0) { $saFilled = 0 } elseif ($saFilled -gt $barWidth) { $saFilled = $barWidth }
                 $saEmpty   = $barWidth - $saFilled
                 $saFilledChars = if ($saFilled -gt 0) { [string]([char]0x2588) * $saFilled } else { '' }
                 $saEmptyChars  = if ($saEmpty  -gt 0) { [string]([char]0x2591) * $saEmpty  } else { '' }
-                $saBar     = "${saColor}${saFilledChars}${RESET}${GRAY}${saEmptyChars}${RESET}"
+                $saBar     = "${saColor}${saFilledChars}${RESET}${BAR_EMPTY}${saEmptyChars}${RESET}"
                 $saUsedLbl = if ($saUsed -ge 1000000) { '{0:F1}M' -f ($saUsed / 1000000.0) }
                              elseif ($saUsed -ge 1000) { '{0:F1}K' -f ($saUsed / 1000.0) }
                              else { "$saUsed" }
@@ -686,9 +699,8 @@ $output += $botRule
 $finalOutput = $output -join "`n"
 
 # --- Threshold notifications ---
-$_nsSessionId = Get-Val $json @('session_id')
-if ($_nsSessionId) {
-    $_notifyState = Join-Path $env:TEMP "statusline-notify-$_nsSessionId.json"
+if ($_ocSafeId) {
+    $_notifyState = Join-Path $env:TEMP "statusline-notify-$_ocSafeId.json"
     $_nsCtx = $false; $_nsRate = $false; $_nsRateResets = ''
 
     if (Test-Path -LiteralPath $_notifyState -ErrorAction SilentlyContinue) {

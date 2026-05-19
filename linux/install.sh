@@ -144,14 +144,19 @@ else
         if [[ -n "$NS_PKG" ]]; then
             read -rp "  ${YELLOW}${BOLD} ?${RESET} Install ${NS_PKG} via ${PKG_MGR}? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
             if [[ "$answer" =~ ^[Yy]$ ]]; then
+                _install_ok=true
                 case "$PKG_MGR" in
-                    apt)    sudo apt-get install -y "$NS_PKG" ;;
-                    dnf)    sudo dnf install -y "$NS_PKG" ;;
-                    pacman) sudo pacman -S --noconfirm "$NS_PKG" ;;
-                    zypper) sudo zypper install -y "$NS_PKG" ;;
-                    apk)    if command -v sudo &>/dev/null; then sudo apk add "$NS_PKG"; else apk add "$NS_PKG"; fi ;;
+                    apt)    sudo apt-get install -y "$NS_PKG" || _install_ok=false ;;
+                    dnf)    sudo dnf install -y "$NS_PKG" || _install_ok=false ;;
+                    pacman) sudo pacman -S --noconfirm "$NS_PKG" || _install_ok=false ;;
+                    zypper) sudo zypper install -y "$NS_PKG" || _install_ok=false ;;
+                    apk)    if command -v sudo &>/dev/null; then sudo apk add "$NS_PKG" || _install_ok=false; else apk add "$NS_PKG" || _install_ok=false; fi ;;
                 esac
-                ok "notify-send installed"
+                if [[ "$_install_ok" == "true" ]]; then
+                    ok "notify-send installed"
+                else
+                    warn "Failed to install $NS_PKG — visual notifications disabled"
+                fi
             else
                 info "Visual notifications will be disabled (sound-only)"
             fi
@@ -314,30 +319,35 @@ info "Plays a sound when Claude needs attention."
 ENABLE_SOUND=""
 ENABLE_VISUAL=""
 if [ -f "$SETTINGS_PATH" ] && jq -e '
-  (.hooks.PermissionRequest // []) + (.hooks.Stop // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
+  (.hooks.PermissionRequest // []) + (.hooks.Stop // []) + (.hooks.PreCompact // []) + (.hooks.PostCompact // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
     ok "Already configured"
 else
     echo ""
     read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
     ENABLE_SOUND="$answer"
-fi
 
-echo ""
-step "Visual notifications"
-info "Shows native OS popups for Claude events."
-if command -v notify-send &>/dev/null; then
     echo ""
-    read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
-    ENABLE_VISUAL="$answer"
-else
-    warn "notify-send not found — visual notifications disabled"
-    ENABLE_VISUAL="n"
+    step "Visual notifications"
+    info "Shows native OS popups for Claude events."
+    if command -v notify-send &>/dev/null; then
+        echo ""
+        read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+        ENABLE_VISUAL="$answer"
+    else
+        warn "notify-send not found — visual notifications disabled"
+        ENABLE_VISUAL="n"
+    fi
 fi
 
 # Apply sound/visual choices to config
-if [[ -n "$ENABLE_SOUND" ]] && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
-    _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
+if { [[ -n "$ENABLE_SOUND" ]] || [[ -n "$ENABLE_VISUAL" ]]; } && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
+    if [[ -n "$ENABLE_SOUND" ]]; then
+        _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
+    else
+        _snd=$(jq -r 'to_entries[0].value.sound // false' "$NOTIFY_CONFIG_PATH" 2>/dev/null)
+        [[ "$_snd" != "true" ]] && _snd=false
+    fi
     _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
     tmp=$(mktemp "$NOTIFY_CONFIG_PATH.XXXXXX")
     if jq --argjson s "$_snd" --argjson v "$_vis" '
@@ -381,7 +391,7 @@ if [[ "$ENABLE_SOUND" =~ ^[Yy]$ ]] || [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]]; then
 
     # Verification toast
     if [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && command -v notify-send &>/dev/null; then
-        notify-send "Claude Status Line" "Notifications enabled!" --urgency=normal 2>/dev/null
+        notify-send "Claude Status Line" "Notifications enabled!" --urgency=normal 2>/dev/null || true
         ok "Test notification sent"
     fi
 else

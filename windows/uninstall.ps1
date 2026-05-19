@@ -243,6 +243,14 @@ if ($tempFiles) {
     Info "No temporary state files found"
 }
 
+# --- Clean up debug log ---
+$debugLog = "$env:USERPROFILE\.claude\statusline-debug.log"
+if (Test-Path $debugLog) {
+    $sz = HumanSize (Get-Item $debugLog).Length
+    Remove-Item $debugLog -Force -ErrorAction SilentlyContinue
+    Ok "Deleted $debugLog ($sz)"
+}
+
 # --- Done ---
 Write-Host ""
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"

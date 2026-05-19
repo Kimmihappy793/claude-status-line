@@ -362,7 +362,7 @@ try {
     exit 1
 }
 if ($existing.hooks) {
-    foreach ($eventName in @('PermissionRequest', 'Stop')) {
+    foreach ($eventName in @('PermissionRequest', 'Stop', 'PreCompact', 'PostCompact')) {
         $eventHooks = $existing.hooks.$eventName
         if ($eventHooks) {
             foreach ($entry in $eventHooks) {

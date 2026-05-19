@@ -436,7 +436,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             )
             [[ -z "$msg_count" ]] && msg_count=0
 
-            # Scan from end (tail -r = macOS tac), skip synthetic entries — without
+            # Scan from end (tail -r with tac fallback for GNU coreutils), skip synthetic entries — without
             # filtering <local-command-*> the detector stays stuck on "working" after /effort.
             claude_is_idle=true
             while IFS= read -r ln; do
@@ -460,7 +460,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                     fi
                     break
                 fi
-            done < <(tail -r "$transcript_path" 2>/dev/null)
+            done < <(tail -r "$transcript_path" 2>/dev/null || tac "$transcript_path" 2>/dev/null)
 
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
@@ -699,7 +699,10 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
             sa_bar="${sa_color}${sa_filled_chars}${RESET}${BAR_EMPTY}${sa_empty_chars}${RESET}"
 
             sa_used_lbl=$(format_tokens "$sa_used")
-            sa_ctx_lbl=$(format_tokens "$sa_ctx_size")
+            sa_ctx_k=$((sa_ctx_size / 1000))
+            if (( sa_ctx_k >= 1000 )); then sa_ctx_lbl="$((sa_ctx_k / 1000))M"
+            else                            sa_ctx_lbl="${sa_ctx_k}K"
+            fi
 
             sa_sep="  ${GRAY}·${RESET}  "
             sa_working="${YELLOW}○ working${RESET}"

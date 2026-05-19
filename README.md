@@ -164,7 +164,7 @@ bash linux/install.sh      # Linux
      "statusLine": {
        "type": "command",
        "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/statusline.ps1",
-       "refreshInterval": 1
+       "refreshInterval": 2
      }
    }
    ```
@@ -260,7 +260,7 @@ By default the status line updates after each assistant message. To also refresh
 }
 ```
 
-This refreshes every 1 second (minimum 1).
+This refreshes every 1 second (minimum 1). On **Windows**, use `refreshInterval: 2` — PowerShell's startup overhead makes 1-second intervals unreliable. The Windows installer sets this automatically.
 
 ### Padding
 

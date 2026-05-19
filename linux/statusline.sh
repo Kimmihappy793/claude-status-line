@@ -457,7 +457,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                     fi
                     break
                 fi
-            done < <(tac "$transcript_path" 2>/dev/null)
+            done < <(tac "$transcript_path" 2>/dev/null || awk '{a[NR]=$0}END{for(i=NR;i>=1;i--)print a[i]}' "$transcript_path" 2>/dev/null)
 
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
@@ -697,7 +697,10 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
             sa_bar="${sa_color}${sa_filled_chars}${RESET}${BAR_EMPTY}${sa_empty_chars}${RESET}"
 
             sa_used_lbl=$(format_tokens "$sa_used")
-            sa_ctx_lbl=$(format_tokens "$sa_ctx_size")
+            sa_ctx_k=$((sa_ctx_size / 1000))
+            if (( sa_ctx_k >= 1000 )); then sa_ctx_lbl="$((sa_ctx_k / 1000))M"
+            else                            sa_ctx_lbl="${sa_ctx_k}K"
+            fi
 
             sa_sep="  ${GRAY}·${RESET}  "
             sa_working="${YELLOW}○ working${RESET}"

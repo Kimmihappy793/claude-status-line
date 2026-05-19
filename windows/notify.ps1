@@ -44,7 +44,7 @@ if ($soundEnabled) {
         'permission'       { 'Windows Exclamation.wav' }
         'stop'             { 'chimes.wav' }
         'compaction_start' { 'Windows Battery Low.wav' }
-        'compaction_done'  { 'Windows Error.wav' }
+        'compaction_done'  { 'chimes.wav' }
         'rate_limit'       { 'Windows Battery Critical.wav' }
         'context_high'     { 'Windows Battery Critical.wav' }
     }
@@ -118,11 +118,16 @@ if ($visualEnabled) {
 
 # --- Sound dispatch (after visual so toast appears instantly) ---
 if ($soundPath) {
-    $player = New-Object System.Media.SoundPlayer $soundPath
-    $player.PlaySync()
-    Write-Log "sound dispatched"
+    try {
+        $player = New-Object System.Media.SoundPlayer $soundPath
+        $player.PlaySync()
+        Write-Log "sound dispatched"
+    } catch {
+        Write-Log "sound failed: $_"
+        try { [System.Media.SystemSounds]::Asterisk.Play() } catch {}
+    }
 } elseif ($soundEnabled) {
-    [System.Media.SystemSounds]::Asterisk.Play()
+    try { [System.Media.SystemSounds]::Asterisk.Play() } catch {}
     Write-Log "sound dispatched (fallback)"
 }
 

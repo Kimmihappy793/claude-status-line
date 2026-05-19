@@ -106,8 +106,11 @@ else
     if command -v brew &>/dev/null; then
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Install terminal-notifier via Homebrew? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            brew install terminal-notifier
-            ok "terminal-notifier installed"
+            if ! brew install terminal-notifier; then
+                warn "Failed to install terminal-notifier — visual notifications disabled"
+            else
+                ok "terminal-notifier installed"
+            fi
         else
             info "Visual notifications will be disabled (sound-only)"
         fi
@@ -268,30 +271,35 @@ info "Plays a sound when Claude needs attention."
 ENABLE_SOUND=""
 ENABLE_VISUAL=""
 if [ -f "$SETTINGS_PATH" ] && jq -e '
-  (.hooks.PermissionRequest // []) + (.hooks.Stop // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
+  (.hooks.PermissionRequest // []) + (.hooks.Stop // []) + (.hooks.PreCompact // []) + (.hooks.PostCompact // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
     ok "Already configured"
 else
     echo ""
     read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
     ENABLE_SOUND="$answer"
-fi
 
-echo ""
-step "Visual notifications"
-info "Shows native OS popups for Claude events."
-if command -v terminal-notifier &>/dev/null; then
     echo ""
-    read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
-    ENABLE_VISUAL="$answer"
-else
-    warn "terminal-notifier not found — visual notifications disabled"
-    ENABLE_VISUAL="n"
+    step "Visual notifications"
+    info "Shows native OS popups for Claude events."
+    if command -v terminal-notifier &>/dev/null; then
+        echo ""
+        read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+        ENABLE_VISUAL="$answer"
+    else
+        warn "terminal-notifier not found — visual notifications disabled"
+        ENABLE_VISUAL="n"
+    fi
 fi
 
 # Apply sound/visual choices to config
-if [[ -n "$ENABLE_SOUND" ]] && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
-    _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
+if { [[ -n "$ENABLE_SOUND" ]] || [[ -n "$ENABLE_VISUAL" ]]; } && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
+    if [[ -n "$ENABLE_SOUND" ]]; then
+        _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
+    else
+        _snd=$(jq -r 'to_entries[0].value.sound // false' "$NOTIFY_CONFIG_PATH" 2>/dev/null)
+        [[ "$_snd" != "true" ]] && _snd=false
+    fi
     _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
     tmp=$(mktemp "$NOTIFY_CONFIG_PATH.XXXXXX")
     if jq --argjson s "$_snd" --argjson v "$_vis" '
@@ -335,7 +343,7 @@ if [[ "$ENABLE_SOUND" =~ ^[Yy]$ ]] || [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]]; then
 
     # Verification toast
     if [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && command -v terminal-notifier &>/dev/null; then
-        terminal-notifier -title "Claude Status Line" -message "Notifications enabled!" 2>/dev/null
+        terminal-notifier -title "Claude Status Line" -message "Notifications enabled!" 2>/dev/null || true
         ok "Test notification sent"
     fi
 else
