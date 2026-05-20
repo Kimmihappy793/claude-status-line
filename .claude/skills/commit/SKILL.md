@@ -16,8 +16,9 @@ Analyze the current repo's full diff and produce a professional commit message w
 
 - **Never execute git commands that modify state.** The user has SSH commit signing -- Claude cannot access the signing key. Output `git add` and `git commit` as fenced code blocks in the chat so the user can copy-paste them into their own terminal.
 - **No Co-Authored-By trailer.**
-- **Detect the shell environment.** On Windows (PowerShell), use here-string syntax (`@'...'@`) for multi-line commit messages. On macOS/Linux (Bash/Zsh), use heredoc syntax (`$(cat <<'EOF' ... EOF)`). Check the platform from the environment before choosing.
+- **Detect the shell environment.** Check the platform and choose paste-safe syntax (see Step 5).
 - **Output goes in the chat, not to a file.**
+- **Paste-safe commands.** Terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
 
 ## Step 1 -- Gather the diff
 
@@ -86,13 +87,23 @@ Before printing the final commands, check your own work:
 
 Print commands as fenced code blocks. List specific files (never `git add -A`).
 
+When pasting into a terminal, long single-line commands break at visual wraps — PowerShell treats each wrapped line as a separate command. Use multi-line paste-safe patterns for `git add` when staging more than a few files.
+
 **On Windows (PowerShell):**
+
+Use `@(...)` array syntax for `git add` — PowerShell keeps parsing until the `)` closes, so newlines are safe:
 
 ~~~
 ```powershell
-git add file1.ps1 file2.sh
+git add @(
+  "file1.ps1",
+  "file2.sh",
+  "file3.sh"
+)
 ```
 ~~~
+
+Use `@'...'@` here-strings for the commit message. The closing `'@` must be at column 0 with no leading spaces:
 
 ~~~
 ```powershell
@@ -110,11 +121,18 @@ Statusline:
 ```
 ~~~
 
+If the here-string won't paste cleanly, suggest `git commit` with no `-m` flag to open the user's editor instead.
+
 **On macOS/Linux (Bash):**
+
+Use `\` line continuation for `git add`:
 
 ~~~
 ```bash
-git add file1.sh file2.sh
+git add \
+  file1.sh \
+  file2.sh \
+  file3.sh
 ```
 ~~~
 
