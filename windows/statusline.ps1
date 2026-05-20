@@ -72,7 +72,7 @@ function Format-Tokens($n) {  # 1234567 -> "1.2M"; "0" for empty
 }
 
 function Get-SubagentCtxSize([string]$model) {
-    if ($model -match '\[1m\]' -or $model -match '-1m\b') { return 1000000 }
+    if ($model -match '\[1m\]' -or $model -match '-1m') { return 1000000 }
     return 200000
 }
 
@@ -104,12 +104,16 @@ $_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
 $_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_ocKeyInput))).Replace('-','')
 
 if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
-    $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
-    if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
-        Write-Log "output cache HIT"
-        $cachedOutput = ($ocLines | Select-Object -Skip 1) -join "`n"
-        Write-Host $cachedOutput -NoNewline
-        exit 0
+    try {
+        $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
+        if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
+            Write-Log "output cache HIT"
+            $cachedOutput = ($ocLines | Select-Object -Skip 1) -join "`n"
+            Write-Host $cachedOutput -NoNewline
+            exit 0
+        }
+    } catch {
+        Write-Log ("output cache read failed, re-rendering: " + $_.Exception.Message)
     }
 }
 
@@ -119,7 +123,7 @@ $cwd = Get-Val $json @('workspace','current_dir')
 if (-not $cwd) { $cwd = Get-Val $json @('cwd') }
 if (-not $cwd) { $cwd = (Get-Location).Path }
 $userHome = $env:USERPROFILE
-if ($cwd -and $userHome -and $cwd.StartsWith($userHome, [System.StringComparison]::OrdinalIgnoreCase)) {
+if ($cwd -and $userHome -and ($cwd -eq $userHome -or $cwd.StartsWith("$userHome\", [System.StringComparison]::OrdinalIgnoreCase) -or $cwd.StartsWith("$userHome/", [System.StringComparison]::OrdinalIgnoreCase))) {
     $cwd = '~' + $cwd.Substring($userHome.Length).Replace('\','/')
 } else {
     # Outside $HOME: collapse to ".../parent/leaf" so the row doesn't blow up.
@@ -174,13 +178,8 @@ if ($ctxSize) {
     # 1M window "25%" maps to exactly 250000 and the display jumps in 10K steps.
     $totalInputTokens = Get-Val $json @('context_window','total_input_tokens')
     $usedTokens = if ($null -ne $totalInputTokens) { [long]$totalInputTokens } else { [int]([double]$ctxSize * $pctClamped / 100) }
-    $usedLbl = if ($usedTokens -ge 1000000) {
-        '{0:F1}M' -f ($usedTokens / 1000000.0)
-    } elseif ($usedTokens -ge 1000) {
-        '{0:F1}K' -f ($usedTokens / 1000.0)
-    } else {
-        "$usedTokens"
-    }
+    $usedLbl = Format-Tokens $usedTokens
+    if (-not $usedLbl) { $usedLbl = '0' }
     $tokenSuffix = " ${GRAY}$([char]0x00B7)${RESET} ${WHITE}${usedLbl}${RESET}${GRAY}/${ctxLabel}${RESET}"
 }
 $ctxBarPart = "${bar} ${barColor}${barPctInt}%${RESET}${tokenSuffix}"
@@ -276,11 +275,11 @@ $durationMs = Get-Val $json @('cost','total_duration_ms')
 if ($null -eq $durationMs) { $durationMs = Get-Val $json @('total_duration_ms') }
 if ($null -eq $durationMs) { $durationMs = Get-Val $json @('duration_ms') }
 if ($null -ne $durationMs) {
-    $secs = [int]([double]$durationMs / 1000)
+    $secs = [int][Math]::Floor([double]$durationMs / 1000)
     $dStr = if ($secs -ge 3600) {
-        '{0}h{1:D2}m' -f [int]($secs/3600), [int](($secs%3600)/60)
+        '{0}h{1:D2}m' -f [int][Math]::Floor($secs / 3600.0), [int][Math]::Floor(($secs % 3600) / 60.0)
     } elseif ($secs -ge 60) {
-        '{0}m{1:D2}s' -f [int]($secs/60), ($secs%60)
+        '{0}m{1:D2}s' -f [int][Math]::Floor($secs / 60.0), ($secs % 60)
     } else {
         '{0}s' -f $secs
     }
@@ -598,11 +597,11 @@ if ($sessionId -and $transcriptPath) {
                 $saFilledChars = if ($saFilled -gt 0) { [string]([char]0x2588) * $saFilled } else { '' }
                 $saEmptyChars  = if ($saEmpty  -gt 0) { [string]([char]0x2591) * $saEmpty  } else { '' }
                 $saBar     = "${saColor}${saFilledChars}${RESET}${BAR_EMPTY}${saEmptyChars}${RESET}"
-                $saUsedLbl = if ($saUsed -ge 1000000) { '{0:F1}M' -f ($saUsed / 1000000.0) }
-                             elseif ($saUsed -ge 1000) { '{0:F1}K' -f ($saUsed / 1000.0) }
-                             else { "$saUsed" }
-                $saCtxLbl  = if ($saCtxSize -ge 1000000) { '{0:F0}M' -f ($saCtxSize / 1000000.0) }
-                             else { '{0:F0}K' -f ($saCtxSize / 1000.0) }
+                $saUsedLbl = Format-Tokens $saUsed
+                if (-not $saUsedLbl) { $saUsedLbl = '0' }
+                $saCtxK    = [math]::Floor($saCtxSize / 1000)
+                $saCtxLbl  = if ($saCtxK -ge 1000) { "$([math]::Floor($saCtxK / 1000))M" }
+                             else { "${saCtxK}K" }
                 $saSep     = "  ${GRAY}$([char]0x00B7)${RESET}  "
                 $saWorking = "${YELLOW}$([char]0x25CB) working${RESET}"
                 $saContent = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}${saSep}${BLUE}${agentDisplay}${RESET}${saSep}${saWorking}"
@@ -717,8 +716,8 @@ if ($_ocSafeId) {
     if (Test-Path $ncPath) {
         try {
             $_nc = Get-Content $ncPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($_nc.context_high.threshold) { $_ctxThresh = [int]$_nc.context_high.threshold }
-            if ($_nc.rate_limit.threshold) { $_rateThresh = [int]$_nc.rate_limit.threshold }
+            if ($null -ne $_nc.context_high.threshold) { $_ctxThresh = [int]$_nc.context_high.threshold }
+            if ($null -ne $_nc.rate_limit.threshold)   { $_rateThresh = [int]$_nc.rate_limit.threshold }
         } catch {}
     }
 

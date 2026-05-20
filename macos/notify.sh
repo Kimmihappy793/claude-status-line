@@ -8,7 +8,7 @@ VALUE="${2:-}"
 [[ -z "$EVENT" ]] && exit 0
 
 STDIN=""
-if [[ "$EVENT" == "permission" ]] && ! [ -t 0 ]; then
+if [[ "$EVENT" == "permission" ]] && ! [[ -t 0 ]]; then
     STDIN=$(cat)
 fi
 

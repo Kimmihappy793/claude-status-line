@@ -156,6 +156,7 @@ Write-Host ""
 # UTF-8 without BOM -- Claude Code rejects a leading BOM on settings.json.
 Step "Configuring Claude Code settings"
 $cmd = "powershell -NoProfile -File `"$scriptPath`""
+# Windows needs refreshInterval >= 2; lower values cause rendering issues.
 $newEntry = [PSCustomObject]@{ type = "command"; command = $cmd; refreshInterval = 2 }
 
 if (Test-Path $settingsPath) {
@@ -329,10 +330,12 @@ if ($localIcon -and (Test-Path $localIcon)) {
 Write-Host ""
 Step "Notification configuration"
 $notifyConfigPath = "$claudeDir\notify-config.json"
+$configWasNew = $false
 if (Test-Path $notifyConfigPath) {
     Ok "Config already exists (preserving)"
     Info $notifyConfigPath
 } else {
+    $configWasNew = $true
     $defaultConfig = @'
 {
   "permission":        { "sound": true, "visual": true },
@@ -381,8 +384,8 @@ if ($existing.hooks) {
     }
 }
 
-$enableSound = 'n'
-$enableVisual = 'n'
+$enableSound = ''
+$enableVisual = ''
 
 if ($hasNotifyHooks) {
     Ok "Already configured"
@@ -399,23 +402,36 @@ if ($hasNotifyHooks) {
         $enableVisual = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET})"
     } else {
         Warn "BurntToast not found - visual notifications disabled"
+        $enableVisual = 'n'
     }
 
     # Apply choices to config
-    if (Test-Path $notifyConfigPath) {
-        try {
-            $ncfg = Get-Content $notifyConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            $sndVal = $enableSound -match '^[Yy]$'
-            $visVal = $enableVisual -match '^[Yy]$'
-            foreach ($prop in $ncfg.PSObject.Properties) {
-                $prop.Value.sound = $sndVal
-                $prop.Value.visual = $visVal
+    if ($configWasNew -and (($enableSound -ne '') -or ($enableVisual -ne ''))) {
+        if (Test-Path $notifyConfigPath) {
+            try {
+                $ncfg = Get-Content $notifyConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($enableSound -ne '') {
+                    $sndVal = $enableSound -match '^[Yy]$'
+                } else {
+                    $sndVal = $false
+                    try { $sndVal = [bool]($ncfg.PSObject.Properties | Select-Object -First 1).Value.sound } catch {}
+                }
+                if ($enableVisual -ne '') {
+                    $visVal = $enableVisual -match '^[Yy]$'
+                } else {
+                    $visVal = $false
+                    try { $visVal = [bool]($ncfg.PSObject.Properties | Select-Object -First 1).Value.visual } catch {}
+                }
+                foreach ($prop in $ncfg.PSObject.Properties) {
+                    $prop.Value.sound = $sndVal
+                    $prop.Value.visual = $visVal
+                }
+                $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                [System.IO.File]::WriteAllText($notifyConfigPath, (Format-Json ($ncfg | ConvertTo-Json -Depth 10)), $utf8NoBom)
+                Ok "Config updated (sound=$sndVal, visual=$visVal)"
+            } catch {
+                Warn "Failed to update config: $_"
             }
-            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-            [System.IO.File]::WriteAllText($notifyConfigPath, (Format-Json ($ncfg | ConvertTo-Json -Depth 10)), $utf8NoBom)
-            Ok "Config updated (sound=$sndVal, visual=$visVal)"
-        } catch {
-            Warn "Failed to update config: $_"
         }
     }
 

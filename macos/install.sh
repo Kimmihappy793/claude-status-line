@@ -32,6 +32,12 @@ human_size() {
     else printf "%d B" "$b"; fi
 }
 
+# --- Bash version check ---
+if (( BASH_VERSINFO[0] < 4 )); then
+    err "bash 4+ required (found $BASH_VERSION). Install via Homebrew: brew install bash"
+    exit 1
+fi
+
 # --- Header ---
 echo ""
 cat <<'BANNER'
@@ -145,7 +151,7 @@ echo ""
 step "Configuring Claude Code settings"
 STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":1}}'
 
-if [ -f "$SETTINGS_PATH" ]; then
+if [[ -f "$SETTINGS_PATH" ]]; then
     if jq -e '.statusLine' "$SETTINGS_PATH" &>/dev/null; then
         echo ""
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
@@ -197,7 +203,7 @@ info "$GIT_REFRESH_PATH ($(human_size $(file_bytes "$GIT_REFRESH_PATH")))"
 echo ""
 step "Live git status"
 info "Keeps git diff/untracked counts up to date as files change."
-if [ -f "$SETTINGS_PATH" ] && jq -e '
+if [[ -f "$SETTINGS_PATH" ]] && jq -e '
   (.hooks.PostToolUse // []) | any(any(.hooks[]?; .command? | contains("git-refresh.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
     ok "Already configured"
@@ -246,10 +252,12 @@ fi
 echo ""
 step "Notification configuration"
 NOTIFY_CONFIG_PATH="$CLAUDE_DIR/notify-config.json"
+_config_was_new=false
 if [[ -f "$NOTIFY_CONFIG_PATH" ]]; then
     ok "Config already exists (preserving)"
     info "$NOTIFY_CONFIG_PATH"
 else
+    _config_was_new=true
     cat > "$NOTIFY_CONFIG_PATH" <<'NCEOF'
 {
   "permission":        { "sound": true, "visual": true },
@@ -270,7 +278,7 @@ step "Sound notifications"
 info "Plays a sound when Claude needs attention."
 ENABLE_SOUND=""
 ENABLE_VISUAL=""
-if [ -f "$SETTINGS_PATH" ] && jq -e '
+if [[ -f "$SETTINGS_PATH" ]] && jq -e '
   (.hooks.PermissionRequest // []) + (.hooks.Stop // []) + (.hooks.PreCompact // []) + (.hooks.PostCompact // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
     ok "Already configured"
@@ -293,14 +301,19 @@ else
 fi
 
 # Apply sound/visual choices to config
-if { [[ -n "$ENABLE_SOUND" ]] || [[ -n "$ENABLE_VISUAL" ]]; } && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
+if [[ "$_config_was_new" == true ]] && { [[ -n "$ENABLE_SOUND" ]] || [[ -n "$ENABLE_VISUAL" ]]; } && [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
     if [[ -n "$ENABLE_SOUND" ]]; then
         _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
     else
         _snd=$(jq -r 'to_entries[0].value.sound // false' "$NOTIFY_CONFIG_PATH" 2>/dev/null)
         [[ "$_snd" != "true" ]] && _snd=false
     fi
-    _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
+    if [[ -n "$ENABLE_VISUAL" ]]; then
+        _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
+    else
+        _vis=$(jq -r 'to_entries[0].value.visual // false' "$NOTIFY_CONFIG_PATH" 2>/dev/null)
+        [[ "$_vis" != "true" ]] && _vis=false
+    fi
     tmp=$(mktemp "$NOTIFY_CONFIG_PATH.XXXXXX")
     if jq --argjson s "$_snd" --argjson v "$_vis" '
       to_entries | map(.value.sound = $s | .value.visual = $v) | from_entries

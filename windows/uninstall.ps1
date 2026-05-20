@@ -54,7 +54,7 @@ Write-Host ""
 Step "Removing status line script"
 if (Test-Path $scriptPath) {
     $sz = HumanSize (Get-Item $scriptPath).Length
-    Remove-Item $scriptPath -Force
+    Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
     Ok "Deleted $scriptPath ($sz)"
 } else {
     Warn "Script not found (already removed?)"
@@ -87,7 +87,7 @@ Write-Host ""
 Step "Removing notification script"
 if (Test-Path $notifyPath) {
     $sz = HumanSize (Get-Item $notifyPath).Length
-    Remove-Item $notifyPath -Force
+    Remove-Item $notifyPath -Force -ErrorAction SilentlyContinue
     Ok "Deleted $notifyPath ($sz)"
 } else {
     Info "Notification script not found (not installed)"
@@ -97,14 +97,22 @@ if (Test-Path $notifyPath) {
 $notifyConfigPath = "$claudeDir\notify-config.json"
 if (Test-Path $notifyConfigPath) {
     $sz = HumanSize (Get-Item $notifyConfigPath).Length
-    Remove-Item $notifyConfigPath -Force
+    Remove-Item $notifyConfigPath -Force -ErrorAction SilentlyContinue
     Ok "Deleted $notifyConfigPath ($sz)"
+}
+
+# --- Remove notification icon ---
+$iconPath = "$claudeDir\claude-icon.png"
+if (Test-Path $iconPath) {
+    $sz = HumanSize (Get-Item $iconPath).Length
+    Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+    Ok "Deleted $iconPath ($sz)"
 }
 
 # --- Remove git-refresh script ---
 if (Test-Path $gitRefreshPath) {
     $sz = HumanSize (Get-Item $gitRefreshPath).Length
-    Remove-Item $gitRefreshPath -Force
+    Remove-Item $gitRefreshPath -Force -ErrorAction SilentlyContinue
     Ok "Deleted $gitRefreshPath ($sz)"
 } else {
     Info "Git-refresh script not found (not installed)"
@@ -168,7 +176,7 @@ if (Test-Path $settingsPath) {
             [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
             Move-Item $tmpPath $settingsPath -Force
             Ok "Removed notification hooks from settings.json"
-            }
+        }
     } catch {
         Warn "Could not update hooks in settings.json - please remove notification hooks manually"
     }

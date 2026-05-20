@@ -193,7 +193,7 @@ fi
 pct_int=""
 pct_color="$WHITE"
 if [[ -n "$used_pct" ]]; then
-    pct_int=$(printf '%.0f' "$used_pct")
+    pct_int=$(printf '%.0f' "$used_pct" 2>/dev/null)
     if (( pct_int >= 85 )); then   pct_color="$RED"
     elif (( pct_int >= 60 )); then pct_color="$YELLOW"
     else                           pct_color="$GREEN"
@@ -557,7 +557,7 @@ format_window() {
     [[ -z "$pct_val" ]] && return
 
     local pct
-    pct=$(printf '%.0f' "$pct_val")
+    pct=$(printf '%.0f' "$pct_val" 2>/dev/null)
     local pct_color
     if (( pct >= 80 )); then     pct_color="$RED"
     elif (( pct >= 50 )); then   pct_color="$YELLOW"

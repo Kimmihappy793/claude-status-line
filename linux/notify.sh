@@ -7,7 +7,7 @@ VALUE="${2:-}"
 [[ -z "$EVENT" ]] && exit 0
 
 STDIN=""
-if [[ "$EVENT" == "permission" ]] && ! [ -t 0 ]; then
+if [[ "$EVENT" == "permission" ]] && ! [[ -t 0 ]]; then
     STDIN=$(cat)
 fi
 
@@ -38,16 +38,14 @@ fi
 # --- Sound dispatch ---
 play_sound() {
     local file="/usr/share/sounds/freedesktop/stereo/$1"
-    if [ -f "$file" ]; then
+    if [[ -f "$file" ]]; then
         if command -v paplay &>/dev/null; then
             paplay "$file" 2>/dev/null
-        elif command -v aplay &>/dev/null; then
-            aplay "$file" 2>/dev/null
-        else
-            printf '\a'
+        elif command -v ffplay &>/dev/null; then
+            ffplay -nodisp -autoexit -loglevel quiet "$file" 2>/dev/null
+        elif command -v ogg123 &>/dev/null; then
+            ogg123 -q "$file" 2>/dev/null
         fi
-    else
-        printf '\a'
     fi
 }
 

@@ -51,13 +51,21 @@ The model row shows a real-time status — `● ready` when idle, or `○ workin
 ### Compact agent view
 When running with `--agent`, the agent row shows context usage as a percentage and cumulative in/out tokens in a compact inline format — all the essentials without taking up extra rows.
 
+### Never miss a prompt
+Sound alerts and native OS toast notifications fire on permission requests, task completion, context compaction, and rate limit warnings. Each event and channel (sound vs. visual) is independently toggleable — get pinged when Claude needs you, stay quiet when it doesn't.
+
 ---
 
-## Quick Install
+## Installation
 
 > **Note:** The installer will ask before overwriting any existing `statusLine` configuration.
+> Restart Claude Code after installing or updating.
 
-### macOS
+---
+
+<h3 id="macos"><img src="https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS" height="40"></h3>
+
+**Install:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/install.sh | bash
@@ -65,7 +73,101 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/m
 
 The installer checks for `jq` and offers to install it via Homebrew if missing.
 
-### Linux
+**Update:**
+
+Re-run the install command above — your other settings are preserved.
+
+**Uninstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/uninstall.sh | bash
+```
+
+<details>
+<summary><strong>Manual install</strong></summary>
+
+1. **Install jq** (if you don't have it):
+   ```bash
+   brew install jq
+   ```
+
+2. **Download the scripts** to your Claude config directory:
+   ```bash
+   mkdir -p ~/.claude
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/statusline.sh -o ~/.claude/statusline.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/notify.sh -o ~/.claude/notify.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/git-refresh.sh -o ~/.claude/git-refresh.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
+   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh
+   ```
+
+3. **Install terminal-notifier** (optional — for visual toast notifications):
+   ```bash
+   brew install terminal-notifier
+   ```
+
+4. **Create the notification config** — save as `~/.claude/notify-config.json`:
+   ```json
+   {
+     "permission":        { "sound": true, "visual": true },
+     "stop":              { "sound": true, "visual": true },
+     "rate_limit":        { "sound": true, "visual": true, "threshold": 80 },
+     "context_high":      { "sound": false, "visual": true, "threshold": 70 },
+     "compaction_start":  { "sound": true, "visual": true },
+     "compaction_done":   { "sound": true, "visual": true }
+   }
+   ```
+
+5. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "~/.claude/statusline.sh",
+       "refreshInterval": 1
+     },
+     "hooks": {
+       "PostToolUse": [
+         {
+           "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
+           "hooks": [{ "type": "command", "command": "~/.claude/git-refresh.sh", "async": true }]
+         }
+       ],
+       "PermissionRequest": [
+         {
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh permission", "async": true }]
+         }
+       ],
+       "Stop": [
+         {
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh stop", "async": true }]
+         }
+       ],
+       "PreCompact": [
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_start", "async": true }]
+         }
+       ],
+       "PostCompact": [
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_done", "async": true }]
+         }
+       ]
+     }
+   }
+   ```
+
+6. **Restart Claude Code** — the status line and notifications are now active.
+
+</details>
+
+---
+
+<h3 id="linux"><img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux" height="40"></h3>
+
+**Install:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/install.sh | bash
@@ -73,13 +175,199 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/l
 
 The installer detects your package manager (apt, dnf, pacman, zypper, apk) and offers to install `jq` if missing.
 
-### Windows
+**Update:**
+
+Re-run the install command above — your other settings are preserved.
+
+**Uninstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/uninstall.sh | bash
+```
+
+<details>
+<summary><strong>Manual install</strong></summary>
+
+1. **Install jq** (if you don't have it):
+   ```bash
+   sudo apt install jq        # Debian/Ubuntu
+   sudo dnf install jq        # Fedora/RHEL
+   sudo pacman -S jq          # Arch
+   ```
+
+2. **Download the scripts** to your Claude config directory:
+   ```bash
+   mkdir -p ~/.claude
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/statusline.sh -o ~/.claude/statusline.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/notify.sh -o ~/.claude/notify.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/git-refresh.sh -o ~/.claude/git-refresh.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
+   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh
+   ```
+
+3. **Install libnotify** (optional — for visual toast notifications):
+   ```bash
+   sudo apt install libnotify-bin    # Debian/Ubuntu
+   sudo dnf install libnotify        # Fedora/RHEL
+   sudo pacman -S libnotify          # Arch
+   ```
+
+4. **Create the notification config** — save as `~/.claude/notify-config.json`:
+   ```json
+   {
+     "permission":        { "sound": true, "visual": true },
+     "stop":              { "sound": true, "visual": true },
+     "rate_limit":        { "sound": true, "visual": true, "threshold": 80 },
+     "context_high":      { "sound": false, "visual": true, "threshold": 70 },
+     "compaction_start":  { "sound": true, "visual": true },
+     "compaction_done":   { "sound": true, "visual": true }
+   }
+   ```
+
+5. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "~/.claude/statusline.sh",
+       "refreshInterval": 1
+     },
+     "hooks": {
+       "PostToolUse": [
+         {
+           "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
+           "hooks": [{ "type": "command", "command": "~/.claude/git-refresh.sh", "async": true }]
+         }
+       ],
+       "PermissionRequest": [
+         {
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh permission", "async": true }]
+         }
+       ],
+       "Stop": [
+         {
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh stop", "async": true }]
+         }
+       ],
+       "PreCompact": [
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_start", "async": true }]
+         }
+       ],
+       "PostCompact": [
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_done", "async": true }]
+         }
+       ]
+     }
+   }
+   ```
+
+6. **Restart Claude Code** — the status line and notifications are now active.
+
+</details>
+
+---
+
+<h3 id="windows"><img src="https://img.shields.io/badge/Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows" height="40"></h3>
+
+**Install:**
 
 ```powershell
 irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/install.ps1 | iex
 ```
 
 No additional dependencies required — uses built-in PowerShell.
+
+**Update:**
+
+Re-run the install command above — your other settings are preserved.
+
+**Uninstall:**
+
+```powershell
+irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/uninstall.ps1 | iex
+```
+
+<details>
+<summary><strong>Manual install</strong></summary>
+
+1. **Download the scripts** to your Claude config directory:
+   ```powershell
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/notify.ps1" -OutFile "$env:USERPROFILE\.claude\notify.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/git-refresh.ps1" -OutFile "$env:USERPROFILE\.claude\git-refresh.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png" -OutFile "$env:USERPROFILE\.claude\claude-icon.png"
+   ```
+
+2. **Install BurntToast** (optional — for visual toast notifications):
+   ```powershell
+   Install-Module -Name BurntToast -Scope CurrentUser
+   ```
+
+3. **Create the notification config** — save as `%USERPROFILE%\.claude\notify-config.json`:
+   ```json
+   {
+     "permission":        { "sound": true, "visual": true },
+     "stop":              { "sound": true, "visual": true },
+     "rate_limit":        { "sound": true, "visual": true, "threshold": 80 },
+     "context_high":      { "sound": false, "visual": true, "threshold": 70 },
+     "compaction_start":  { "sound": true, "visual": true },
+     "compaction_done":   { "sound": true, "visual": true }
+   }
+   ```
+
+4. **Add to your Claude Code settings** — edit `%USERPROFILE%\.claude\settings.json`:
+
+   Replace `YOUR_USERNAME` with your Windows username in all paths below.
+
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/statusline.ps1",
+       "refreshInterval": 2
+     },
+     "hooks": {
+       "PostToolUse": [
+         {
+           "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
+           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/git-refresh.ps1", "async": true }]
+         }
+       ],
+       "PermissionRequest": [
+         {
+           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 permission", "async": true }]
+         }
+       ],
+       "Stop": [
+         {
+           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 stop", "async": true }]
+         }
+       ],
+       "PreCompact": [
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 compaction_start", "async": true }]
+         }
+       ],
+       "PostCompact": [
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 compaction_done", "async": true }]
+         }
+       ]
+     }
+   }
+   ```
+
+5. **Restart Claude Code** — the status line and notifications are now active.
+
+</details>
+
+---
 
 ### From a cloned repo
 
@@ -91,156 +379,7 @@ bash linux/install.sh      # Linux
 .\windows\install.ps1      # Windows
 ```
 
----
-
-## Manual Install
-
-### macOS
-
-1. **Install jq** (if you don't have it):
-   ```bash
-   brew install jq
-   ```
-
-2. **Download the script** to your Claude config directory:
-   ```bash
-   mkdir -p ~/.claude
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/statusline.sh -o ~/.claude/statusline.sh
-   chmod +x ~/.claude/statusline.sh
-   ```
-
-3. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
-   ```json
-   {
-     "statusLine": {
-       "type": "command",
-       "command": "~/.claude/statusline.sh",
-       "refreshInterval": 1
-     }
-   }
-   ```
-
-4. **Restart Claude Code** — the status line appears at the bottom of your terminal.
-
-### Linux
-
-1. **Install jq** (if you don't have it):
-   ```bash
-   sudo apt install jq        # Debian/Ubuntu
-   sudo dnf install jq        # Fedora/RHEL
-   sudo pacman -S jq          # Arch
-   ```
-
-2. **Download the script** to your Claude config directory:
-   ```bash
-   mkdir -p ~/.claude
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/statusline.sh -o ~/.claude/statusline.sh
-   chmod +x ~/.claude/statusline.sh
-   ```
-
-3. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
-   ```json
-   {
-     "statusLine": {
-       "type": "command",
-       "command": "~/.claude/statusline.sh",
-       "refreshInterval": 1
-     }
-   }
-   ```
-
-4. **Restart Claude Code** — the status line appears at the bottom of your terminal.
-
-### Windows
-
-1. **Download the script** to your Claude config directory:
-   ```powershell
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
-   ```
-
-2. **Add to your Claude Code settings** — edit `%USERPROFILE%\.claude\settings.json`:
-   ```json
-   {
-     "statusLine": {
-       "type": "command",
-       "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/statusline.ps1",
-       "refreshInterval": 2
-     }
-   }
-   ```
-   Replace `YOUR_USERNAME` with your Windows username.
-
-3. **Restart Claude Code** — the status line appears at the bottom of your terminal.
-
----
-
-## Updating
-
-Re-run the install command. Your other settings are preserved.
-
-### macOS
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/install.sh | bash
-```
-
-### Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/install.sh | bash
-```
-
-### Windows
-
-```powershell
-irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/install.ps1 | iex
-```
-
-### From a cloned repo
-
-```bash
-cd claude-status-line
-git pull
-bash macos/install.sh      # macOS
-bash linux/install.sh      # Linux
-.\windows\install.ps1      # Windows
-```
-
-Restart Claude Code to pick up the new version.
-
----
-
-## Uninstalling
-
-Removes the script and the `statusLine` config from `settings.json`. Your other settings are preserved.
-
-### macOS
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/uninstall.sh | bash
-```
-
-### Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/uninstall.sh | bash
-```
-
-### Windows
-
-```powershell
-irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/uninstall.ps1 | iex
-```
-
-### From a cloned repo
-
-```bash
-bash macos/uninstall.sh      # macOS
-bash linux/uninstall.sh      # Linux
-.\windows\uninstall.ps1      # Windows
-```
-
-Restart Claude Code to return to the default status bar.
+To update, `git pull` and re-run the install script. To uninstall, run the uninstall script for your platform.
 
 ---
 

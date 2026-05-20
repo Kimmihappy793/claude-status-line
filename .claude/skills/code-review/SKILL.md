@@ -1,61 +1,96 @@
 ---
 name: code-review
 description: >
-  Comprehensive multi-platform code review for claude-status-line. Launches 4 parallel
-  subagents — one per OS folder (macos, linux, windows) plus a cross-platform parity checker.
-  Use this skill whenever you want to review code quality, check for bugs, verify platform
-  parity, or audit adherence to project conventions. Trigger on: "review", "code review",
-  "audit", "check parity", "check all platforms", or any request to find bugs across the repo.
+  Multi-platform code review for claude-status-line with three scope modes: full project
+  (3 OS agents + parity checker), single-platform deep dive (one agent per file), or
+  script-type review across platforms. Discovers files dynamically via Glob — never goes stale.
+  Trigger on: "review", "code review", "audit", "check parity", "check all platforms",
+  or any request to find bugs across the repo.
 ---
 
 # Code Review — claude-status-line
 
-This skill runs a structured, parallel code review of the entire repo by spawning 4 subagents:
+This skill runs a structured, parallel code review with dynamic file discovery and three scope modes.
 
-| Agent | Scope | Focus |
-|-------|-------|-------|
-| **macOS reviewer** | `macos/` (5 files) | Platform-specific bugs, conventions, correctness |
-| **Linux reviewer** | `linux/` (5 files) | Platform-specific bugs, conventions, correctness |
-| **Windows reviewer** | `windows/` (5 files) | Platform-specific bugs, conventions, correctness |
-| **Parity checker** | All three folders | Cross-platform drift, missing features, behavioral divergence |
+## Phase 0 — Scope detection and file discovery
 
-## How to run
+### Step 1: Detect scope
 
-Launch all 4 subagents in a **single message** so they run concurrently. Use `subagent_type: "feature-dev:code-reviewer"` for all 4 agents. Each prompt below is self-contained — send them as-is.
+Parse the user's request to determine the review mode:
 
-After all 4 return, synthesize their findings into a single report (format at the bottom of this document).
+| Mode | Trigger | Dispatch |
+|------|---------|----------|
+| **Full** (default) | No qualifier, or "review everything" | 3 OS agents + 1 parity checker |
+| **Platform** | Names a specific OS — "review macos/", "check windows scripts" | 1 agent per file in that folder |
+| **Script-type** | Names a script type — "review installers", "check notify handlers" | 3 OS agents (scoped) + 1 parity checker |
 
-### Invocation example
+Script-type keyword → file pattern:
 
-Send all 4 Agent calls in one message:
+| Keyword | Pattern |
+|---------|---------|
+| "statusline" | `statusline.*` |
+| "installer" / "install" | `install.*` |
+| "uninstaller" / "uninstall" | `uninstall.*` |
+| "notify" / "notification" | `notify.*` |
+| "git-refresh" / "hook" | `git-refresh.*` |
+
+### Step 2: Discover files
+
+Run Glob **before dispatching** to build the file inventory dynamically:
+
+- `Glob("macos/*.sh")` — macOS scripts
+- `Glob("linux/*.sh")` — Linux scripts
+- `Glob("windows/*.ps1")` — Windows scripts
+
+For **script-type mode**, filter the results to only files matching the detected pattern.
+
+### Step 3: Dispatch
+
+Launch all subagents in a **single message** for concurrency. Use `subagent_type: "feature-dev:code-reviewer"` for all agents.
+
+**Full mode** — 4 agents:
+
+| Agent | Prompt | `{FILES}` value |
+|-------|--------|-----------------|
+| macOS reviewer | macOS prompt below | All discovered `macos/` files |
+| Linux reviewer | Linux prompt below | All discovered `linux/` files |
+| Windows reviewer | Windows prompt below | All discovered `windows/` files |
+| Parity checker | Parity prompt below | All files, grouped by script type |
+
+**Platform mode** — one agent per file:
+
+Dispatch one agent per discovered file in the target folder. Use the same OS prompt template as full mode, but set `{FILES}` to the single file name. The subagent will focus on the check categories relevant to that file type (each category heading indicates which file it applies to). No parity checker in platform mode.
+
+**Script-type mode** — 4 agents (scoped):
+
+Same dispatch as full mode, but `{FILES}` contains only the file(s) matching the script-type pattern per platform. The parity checker's `{ALL_FILES}` is similarly filtered.
+
+### Placeholder substitution
+
+Before sending each prompt, replace these placeholders with actual values:
+
+- `{FILES}` — comma-separated file names from Glob (e.g., `statusline.sh, install.sh, notify.sh`)
+- `{ALL_FILES}` — all files grouped by script type across platforms, one group per line. Match files across platforms by base name (e.g., `statusline`). Format:
+  `macos/statusline.sh, linux/statusline.sh, windows/statusline.ps1`
+  `macos/install.sh, linux/install.sh, windows/install.ps1`
+  ...etc for each discovered script type.
+
+After all agents return, proceed to Phase 1 (synthesis).
+
+### Invocation examples
 
 ```
-Agent({
-  description: "Review macOS platform",
-  subagent_type: "feature-dev:code-reviewer",
-  prompt: "<macOS reviewer prompt below, verbatim>"
-})
+# Full (default) — 3 OS agents + parity checker
+/code-review
 
-Agent({
-  description: "Review Linux platform",
-  subagent_type: "feature-dev:code-reviewer",
-  prompt: "<Linux reviewer prompt below, verbatim>"
-})
+# Platform — one agent per file in the target folder
+/code-review of macos scripts
 
-Agent({
-  description: "Review Windows platform",
-  subagent_type: "feature-dev:code-reviewer",
-  prompt: "<Windows reviewer prompt below, verbatim>"
-})
-
-Agent({
-  description: "Cross-platform parity check",
-  subagent_type: "feature-dev:code-reviewer",
-  prompt: "<Parity checker prompt below, verbatim>"
-})
+# Script-type — 3 scoped OS agents + parity checker
+/code-review of all installer scripts
 ```
 
-## Subagent prompts
+## Subagent prompt templates
 
 ### Prompt: macOS reviewer
 
@@ -64,7 +99,7 @@ You are reviewing the macOS platform folder of the claude-status-line project �
 status line for Claude Code that parses JSON from stdin and renders ANSI output.
 
 Review these files in macos/:
-  statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh
+  {FILES}
 
 ## Project rules (from CLAUDE.md)
 
@@ -182,7 +217,7 @@ You are reviewing the Linux platform folder of the claude-status-line project �
 status line for Claude Code that parses JSON from stdin and renders ANSI output.
 
 Review these files in linux/:
-  statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh
+  {FILES}
 
 The Linux scripts are ~95% identical to macOS. Key known differences:
 - stat uses -c (GNU coreutils) instead of -f (BSD) for file metadata
@@ -307,7 +342,7 @@ You are reviewing the Windows platform folder of the claude-status-line project 
 status line for Claude Code that parses JSON from stdin and renders ANSI output.
 
 Review these files in windows/:
-  statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh.ps1
+  {FILES}
 
 The Windows scripts are functionally equivalent to macOS/Linux but use PowerShell 5.1 idioms:
 - JSON parsing via ConvertFrom-Json (returns PSCustomObject, not hashtable)
@@ -435,11 +470,7 @@ diff behavior across all three platforms (macos/, linux/, windows/) and find dri
 fixes, or behaviors present on one platform but missing or different on another.
 
 Read ALL of these files:
-  macos/statusline.sh, linux/statusline.sh, windows/statusline.ps1
-  macos/install.sh, linux/install.sh, windows/install.ps1
-  macos/uninstall.sh, linux/uninstall.sh, windows/uninstall.ps1
-  macos/notify.sh, linux/notify.sh, windows/notify.ps1
-  macos/git-refresh.sh, linux/git-refresh.sh, windows/git-refresh.ps1
+  {ALL_FILES}
 
 ## Project rules (from CLAUDE.md)
 
@@ -521,38 +552,269 @@ Only report real differences. Syntactic differences between Bash and PowerShell 
 identical behavior are NOT findings. Focus on semantic and behavioral drift.
 ```
 
-## Synthesizing the final report
+## Phase 1 — Write the master list to file
 
-After all 4 subagents return, aggregate their findings into a single report with these sections:
+After all subagents return, aggregate their findings into a single markdown report and **write it to disk immediately** before doing anything else. This ensures the master list is preserved even if the session ends mid-verification.
 
-```markdown
+### Output path
+
+Write the file to `docs/code-review/`, creating the directory if needed. Use a scope-aware filename so different review modes don't overwrite each other:
+
+| Mode | Filename |
+|------|----------|
+| Full | `YYYY-MM-DD-code-review.md` |
+| Platform | `YYYY-MM-DD-code-review-{platform}.md` (e.g., `2026-05-20-code-review-macos.md`) |
+| Script-type | `YYYY-MM-DD-code-review-{script-type}.md` (e.g., `2026-05-20-code-review-installer.md`) |
+
+Use the first alias from the keyword mapping table as the slug (e.g., `installer`, not `install`). If a file with the same name already exists, overwrite it (a re-run supersedes the previous review).
+
+### Report format
+
+Use the template below verbatim as the skeleton. Fill in dynamic values where indicated.
+
+````markdown
 # Code Review — claude-status-line
 
+> **Date:** YYYY-MM-DD
+> **Reviewed by:** N parallel subagents (list agent roles based on dispatch mode)
+> **Scope:** Describe the actual review scope (e.g., "All platform scripts", "macOS platform — 5 files", "Installer scripts across all platforms")
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|------:|
+| Critical | N     |
+| Warning  | N     |
+| Parity   | N     |
+| Nit      | N     |
+| **Total**| **N** |
+
+**Files reviewed:** N &nbsp;&nbsp;|&nbsp;&nbsp; **Clean files:** N &nbsp;&nbsp;|&nbsp;&nbsp; **Files with findings:** N
+
+---
+
 ## Critical Issues
-<!-- Issues that break functionality or violate the silent degradation contract -->
 
-## Warnings
-<!-- Incorrect behavior possible under certain conditions -->
+> Items that break functionality or violate the silent degradation contract. Must fix before shipping.
 
-## Cross-Platform Parity
-<!-- Drift and feature gaps from the parity checker -->
+If none, write: *No critical issues found.*
 
-## Nits
-<!-- Style and convention issues -->
+Otherwise, for each finding use this block:
 
-## Clean Files
-<!-- Files with no issues — list them so the user knows they were reviewed -->
+---
+
+### C-N: `<short title>`
+
+| | |
+|---|---|
+| **File** | `path/file.ext:LINE` |
+| **Severity** | Critical |
+| **Source** | macOS reviewer / Linux reviewer / Windows reviewer / Parity checker |
+
+> In platform mode, append the file to disambiguate per-file agents (e.g., "macOS reviewer (notify.sh)").
+
+**Description**
+
+<1-3 sentences: what's wrong and why it matters>
+
+**Suggested fix**
+
+```diff
+- <old code>
++ <new code>
 ```
 
-Deduplicate across agents — if the parity checker and an OS agent both flag the same issue, merge them into one entry. Prefer the more specific description.
+---
 
-### Handling disagreements
+## Warnings
 
-When agents conflict on the same code:
+> Incorrect behavior possible under certain conditions — edge cases, race conditions, missing guards.
+
+If none, write: *No warnings found.*
+
+Same finding block format as Critical, but numbered W-N.
+
+---
+
+## Cross-Platform Parity
+
+> Drift, feature gaps, and behavioral divergence across macOS, Linux, and Windows.
+
+If none, write: *All platforms are in sync.*
+
+For parity findings, use a comparison table inside the finding block:
+
+---
+
+### P-N: `<short title>`
+
+| | |
+|---|---|
+| **Files** | `macos/file.sh:LINE`, `linux/file.sh:LINE`, `windows/file.ps1:LINE` |
+| **Severity** | Warning / Nit / Review |
+| **Source** | Parity checker |
+
+**Description**
+
+<what differs and why it matters>
+
+| Platform | Behavior |
+|----------|----------|
+| macOS    | <what macOS does> |
+| Linux    | <what Linux does> |
+| Windows  | <what Windows does> |
+
+**Suggested resolution**
+
+<which platform is correct, or flag for human review if unclear>
+
+---
+
+## Nits
+
+> Style and convention issues that don't affect behavior.
+
+If none, write: *No nits found.*
+
+For nits, use a compact table — one row per finding, no expanded blocks:
+
+| # | File | Description | Suggested fix |
+|---|------|-------------|---------------|
+| N-1 | `path:LINE` | ... | ... |
+| N-2 | `path:LINE` | ... | ... |
+
+---
+
+## Clean Files
+
+> These files were reviewed and had no issues.
+
+| Platform | File | Status |
+|----------|------|--------|
+| macOS    | `statusline.sh` | Clean |
+| macOS    | `install.sh` | Clean |
+| ...      | ... | ... |
+
+---
+
+## Recommended Fix Order
+
+> Prioritized action plan. Only includes CONFIRMED and PARTIAL findings from verification.
+
+*Populated after Phase 2 verification.*
+
+---
+
+*Review generated by claude-status-line code-review skill.*
+````
+
+### Formatting rules
+
+- **Finding IDs**: prefix with severity letter and sequential number — `C-1`, `C-2` for criticals, `W-1`, `W-2` for warnings, `P-1`, `P-2` for parity, `N-1`, `N-2` for nits. These make findings easy to reference in discussion.
+- **Diff blocks**: use ` ```diff ` fenced blocks for suggested fixes so added/removed lines render in green/red.
+- **Empty sections**: always include every section header even if empty — write the "none found" message. This confirms the category was checked, not skipped.
+- **Horizontal rules** (`---`): place one between each expanded finding block to visually separate them.
+- **Tables**: use right-aligned count column in the summary table (`------:|`).
+- **Backtick paths**: always wrap file paths and line references in backticks.
+- **No emojis.** Use text labels for severity, not icons.
+
+### Deduplication and disagreement handling
+
+- If the parity checker and an OS agent both flag the same issue, merge into one entry. Prefer the more specific description.
 - **Platform agent vs. parity checker**: Prefer the platform-specific agent's judgment on whether behavior is correct for that platform. Prefer the parity checker's judgment on whether platforms should match.
-- **Contradictory fixes**: If two agents suggest different fixes for the same issue, include both suggestions and flag the disagreement for human review. Don't silently pick one.
-- **Bug vs. intentional**: If one agent flags something as a bug and another's analysis implies it's intentional, include it as severity "review" with both perspectives. Let the human decide.
-- **Confidence mismatch**: If one agent is confident and another hedges ("might be a bug"), include the finding but note the split confidence.
+- **Contradictory fixes**: If two agents suggest different fixes, include both and flag the disagreement for human review. Don't silently pick one.
+- **Bug vs. intentional**: If one agent flags something as a bug and another implies it's intentional, use severity "review" with both perspectives.
+- **Confidence mismatch**: If one agent is confident and another hedges, include the finding but note the split confidence.
+
+---
+
+## Phase 2 — Verify the master list
+
+After writing the master list to disk, go through **every finding** and verify it against the actual code. This catches subagent hallucinations — wrong line numbers, misread logic, phantom bugs.
+
+### Verification procedure
+
+For each finding in the master list:
+
+1. **Read the cited file and line** using the Read tool. Read enough context (the cited line +/- ~10 lines) to understand the surrounding logic.
+2. **For parity findings**, read the corresponding code on all referenced platforms.
+3. **Judge the finding**: Is it real? Is the line number correct? Is the description accurate?
+4. **Assign a verdict**: one of three values:
+   - `CONFIRMED` — the issue is real, line number is correct, description is accurate
+   - `FALSE POSITIVE` — the issue does not exist, or the code is actually correct
+   - `PARTIAL` — the issue is real but the description or line number is slightly off
+5. **Write a 1-2 sentence reason** explaining the verdict.
+
+### Updating the file
+
+After verifying each finding, edit the master list file in place. Add the verification result inside the finding.
+
+**For expanded finding blocks** (Critical, Warning, Parity): append a verification section at the bottom of the block, before the `---` separator:
+
+```markdown
+**Verification: CONFIRMED** — <1-2 sentence reason>
+```
+```markdown
+**Verification: FALSE POSITIVE** — <1-2 sentence reason>
+```
+```markdown
+**Verification: PARTIAL** — <1-2 sentence reason, including what's off>
+```
+
+**For compact nit rows**: add a `Verdict` column to the nits table:
+
+```markdown
+| # | File | Description | Suggested fix | Verdict |
+|---|------|-------------|---------------|---------|
+| N-1 | `path:LINE` | ... | ... | CONFIRMED — reason |
+| N-2 | `path:LINE` | ... | ... | FALSE POSITIVE — reason |
+```
+
+**After verification is complete**, update the summary table to add a verification breakdown:
+
+```markdown
+| Severity | Count | Confirmed | False Positive | Partial |
+|----------|------:|----------:|---------------:|--------:|
+| Critical | N     | N         | N              | N       |
+| Warning  | N     | N         | N              | N       |
+| Parity   | N     | N         | N              | N       |
+| Nit      | N     | N         | N              | N       |
+| **Total**| **N** | **N**     | **N**           | **N**   |
+```
+
+Do NOT apply fixes or modify source code during verification. The verification phase produces annotations only — the user decides what to fix.
+
+### Verification order
+
+Process findings in severity order: critical first, then warnings, then parity, then nits. This ensures the most important items are verified even if the session runs long.
+
+### Populate the recommended fix order
+
+After all findings are verified, populate the "Recommended Fix Order" section in the report. Order fixes by:
+
+1. **Critical issues** — fix first, in dependency order (if fix B depends on fix A, list A first)
+2. **Cross-platform parity issues** — fix next, grouped by script type so all platforms get the same change atomically
+3. **Warnings with multi-platform impact** — a warning affecting all 3 platforms ranks higher than a single-platform warning
+4. **Single-platform warnings** — isolated issues
+5. **Nits** — lowest priority, batch together
+
+Only include CONFIRMED and PARTIAL findings. Omit FALSE POSITIVEs.
+
+Use this table format:
+
+```markdown
+| Priority | Finding(s) | Files | Notes |
+|----------|-----------|-------|-------|
+| 1 | C-1 | `macos/statusline.sh`, `linux/statusline.sh`, `windows/statusline.ps1` | Fix across all platforms atomically |
+| 2 | P-2, W-3 | `linux/notify.sh` | Linux-only, ports macOS behavior |
+| ... | ... | ... | ... |
+```
+
+For each row, note whether the fix should be applied atomically across platforms (to maintain parity) or can be done independently.
+
+---
 
 ## Tips
 
@@ -561,3 +823,5 @@ When agents conflict on the same code:
 - The statusline scripts are the largest and most complex files in each platform folder. Most bugs hide there.
 - Threshold values and color codes are common drift points — they get updated on one platform and forgotten on others.
 - The reviewing subagents have runtime verification instructions. Findings they verified by actually running the scripts are higher confidence — weight them accordingly in the synthesis.
+- The verification pass is sequential (one Read per finding). On a large finding list this may take many tool calls — that's expected and correct.
+- **Choosing a scope**: Use platform mode for single-OS deep dives (e.g., debugging a macOS-only issue). Use script-type mode when porting a feature or fix across platforms — it reviews the same script on all three OSes plus parity in one pass.

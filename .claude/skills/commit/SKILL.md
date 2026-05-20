@@ -1,0 +1,144 @@
+---
+name: commit
+description: >
+  Generate a professional git commit message from the repo's current diff. Analyzes all
+  staged, unstaged, and untracked changes, categorizes them, and outputs ready-to-paste
+  git commands. Trigger on: "commit", "write a commit", "commit message", "what changed",
+  "summarize changes", "draft commit", "changelog", or any request to commit, stage, or
+  describe the current diff.
+---
+
+# /commit -- Git Commit Message Generator
+
+Analyze the current repo's full diff and produce a professional commit message with ready-to-copy git commands.
+
+## Core rules
+
+- **Never execute git commands that modify state.** The user has SSH commit signing -- Claude cannot access the signing key. Output `git add` and `git commit` as fenced code blocks in the chat so the user can copy-paste them into their own terminal.
+- **No Co-Authored-By trailer.**
+- **Detect the shell environment.** On Windows (PowerShell), use here-string syntax (`@'...'@`) for multi-line commit messages. On macOS/Linux (Bash/Zsh), use heredoc syntax (`$(cat <<'EOF' ... EOF)`). Check the platform from the environment before choosing.
+- **Output goes in the chat, not to a file.**
+
+## Step 1 -- Gather the diff
+
+Run these read-only commands together to avoid round-trips:
+
+```
+git status && git diff && git diff --cached && git diff --stat && git log --oneline -5
+```
+
+This gives you: staged/unstaged/untracked files, the full diffs, a file-level summary, and recent commits for style matching.
+
+**Untracked files:** read their content to understand what they add, but skip files that are binary or larger than 100 KB -- just note their path and size.
+
+**No changes?** If both diffs are empty and there are no untracked files, tell the user "No changes to commit." Do not fabricate a message.
+
+**Merge conflicts?** If `<<<<<<<` appears in the diff, stop and tell the user to resolve conflicts before committing. Do not produce a commit message.
+
+**Staged vs unstaged split?** If some changes are staged and others are not, write the commit message for staged changes only. Note the unstaged changes separately so the user knows what's left out -- they may want to stage more or make a second commit.
+
+## Step 2 -- Analyze and categorize
+
+Read the diff and identify what changed, why, and the scope.
+
+- **Secrets check**: if `.env`, credentials, API keys, tokens, or private keys appear in the diff, warn the user prominently before presenting any commit commands. List the suspect files so they can review.
+- **Large single-file diffs** (>500 lines): summarize at the file level using `--stat` rather than line-by-line.
+- **Binary files**: note their paths in the analysis but don't attempt to describe content changes.
+
+## Step 3 -- Write the commit message
+
+**Match the repo's existing commit style.** Check `git log --oneline -5`. If the repo uses conventional commit prefixes (`fix:`, `feat:`, etc.), use them. If the repo uses plain imperative sentences without prefixes, do the same. When there's no clear pattern (new repo, mixed styles), default to conventional commits: `type(optional-scope): summary`.
+
+**Summary line:**
+- Imperative mood ("Add", "Fix", "Refactor")
+- No period at the end
+- Lowercase after any prefix colon
+- **Must be 72 characters or fewer.** After drafting, count the characters. If over 72, rewrite shorter -- drop scope, generalize wording, or move detail to the body. Recount until it fits.
+
+**Body:**
+- Blank line between summary and body
+- Explain what and why, not how
+- **Always use bulleted lists** (`- ` prefix) -- never prose paragraphs
+- **Group bullets into labeled sections** when changes span 3+ distinct areas:
+
+```
+Installers:
+- Guard notify-config.json writes so re-runs preserve prefs
+- Fix visual toggle fallback when user is not prompted
+
+Statusline:
+- Fix Windows cwd collapse matching partial usernames
+- Suppress stderr on printf calls (macOS/Linux)
+```
+
+- Use a flat bullet list when changes are in one area or closely related
+- If changes affect multiple platforms, note which ones in the relevant bullet
+
+## Step 4 -- Verify before output
+
+Before printing the final commands, check your own work:
+
+1. **Count the summary line** -- confirm it is 72 characters or fewer. If not, rewrite and recount.
+2. **Cross-check file coverage** -- every file from `git status` should appear in the body or be explicitly noted as excluded (e.g., binary, untracked infrastructure). Don't silently drop files.
+3. **Confirm no secrets** -- re-scan for `.env`, key files, credentials in the staging list. Warn if found.
+
+## Step 5 -- Output the commands
+
+Print commands as fenced code blocks. List specific files (never `git add -A`).
+
+**On Windows (PowerShell):**
+
+~~~
+```powershell
+git add file1.ps1 file2.sh
+```
+~~~
+
+~~~
+```powershell
+git commit -m @'
+Fix statusline bugs and harden installers
+
+Installers:
+- Guard notify-config.json writes so re-runs preserve prefs
+- Add Bash 4+ version check to macOS installer
+
+Statusline:
+- Fix Windows cwd collapse matching partial usernames
+- Suppress stderr on printf calls (macOS/Linux)
+'@
+```
+~~~
+
+**On macOS/Linux (Bash):**
+
+~~~
+```bash
+git add file1.sh file2.sh
+```
+~~~
+
+~~~
+```bash
+git commit -m "$(cat <<'EOF'
+Fix statusline bugs and harden installers
+
+Installers:
+- Guard notify-config.json writes so re-runs preserve prefs
+- Add Bash 4+ version check to macOS installer
+
+Statusline:
+- Fix cwd collapse matching partial usernames
+- Suppress stderr on printf calls
+EOF
+)"
+```
+~~~
+
+## Edge cases
+
+- **Mixed staged and unstaged**: commit message covers staged changes only; list unstaged changes separately
+- **Large diffs (>20 files)**: lead with `--stat`, group by area, suggest splitting if changes are logically independent
+- **Only untracked files**: stage and commit them normally -- describe what they add in the body
+- **Binary files**: note paths, don't describe content
+- **Merge conflict markers**: refuse to produce a commit message until resolved

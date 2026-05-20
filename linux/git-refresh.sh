@@ -13,3 +13,4 @@ safe_id="${session_id//[^a-zA-Z0-9_-]/}"
 tmpdir="${TMPDIR:-/tmp}"
 rm -f "${tmpdir}/statusline-git-${safe_id}.txt"
 rm -f "${tmpdir}/statusline-oc-${safe_id}.txt"
+exit 0
