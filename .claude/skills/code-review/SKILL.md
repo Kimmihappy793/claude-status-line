@@ -1,16 +1,19 @@
 ---
 name: code-review
 description: >
-  Multi-platform code review for claude-status-line with three scope modes: full project
-  (3 OS agents + parity checker), single-platform deep dive (one agent per file), or
-  script-type review across platforms. Discovers files dynamically via Glob — never goes stale.
+  Multi-platform code review for claude-status-line with four scope modes: full project
+  (3 OS agents + 3 logic auditors + parity checker), single-platform deep dive (one agent per file),
+  script-type review across platforms, or diff-only review of uncommitted changes.
+  Discovers files dynamically via Glob — never goes stale.
   Trigger on: "review", "code review", "audit", "check parity", "check all platforms",
-  or any request to find bugs across the repo.
+  "diff", "quick", or any request to find bugs across the repo. Also triggers Phase 3
+  (post-fix registry update) after fixing findings via /writing-plans, or when asked to
+  "update the registry" or "mark findings as fixed".
 ---
 
 # Code Review — claude-status-line
 
-This skill runs a structured, parallel code review with dynamic file discovery and three scope modes.
+This skill runs a structured, parallel code review with dynamic file discovery and four scope modes.
 
 ## Phase 0 — Scope detection and file discovery
 
@@ -23,6 +26,16 @@ Parse the user's request to determine the review mode:
 | **Full** (default) | No qualifier, or "review everything" | 3 OS agents + 1 parity checker |
 | **Platform** | Names a specific OS — "review macos/", "check windows scripts" | 1 agent per file in that folder |
 | **Script-type** | Names a script type — "review installers", "check notify handlers" | 3 OS agents (scoped) + 1 parity checker |
+| **Diff** | "diff", "quick", or auto-detect | Per-changed-platform agents + 1 parity checker |
+
+**Diff mode trigger rules:**
+
+- **Explicit:** User says "diff" or "quick" — enter diff mode immediately.
+- **Auto-detect:** If no scope qualifier is given, run changed-file discovery (see Step 2a below). If platform script files are dirty, prompt:
+
+  > "You have uncommitted changes in N script files. Review just the changes, or run a full review?"
+
+  Use `AskUserQuestion` with options `[Diff only]` and `[Full review]`. If the user picks "Full review", proceed with full mode. If no platform script files are dirty, skip the prompt and default to full mode.
 
 Script-type keyword → file pattern:
 
@@ -44,18 +57,34 @@ Run Glob **before dispatching** to build the file inventory dynamically:
 
 For **script-type mode**, filter the results to only files matching the detected pattern.
 
+### Step 2a: Changed-file discovery (diff mode only)
+
+Run two git commands via Bash and take their union:
+
+```bash
+git diff HEAD --name-only --diff-filter=ACMR
+git ls-files --others --exclude-standard
+```
+
+Filter the union to paths matching `macos/*.sh`, `linux/*.sh`, `windows/*.ps1`. Drop all other paths.
+
+**Empty result:** If no platform script files changed after filtering, print `"No script files changed — nothing to review."` and stop. Do not dispatch any agents.
+
 ### Step 3: Dispatch
 
 Launch all subagents in a **single message** for concurrency. Use `subagent_type: "feature-dev:code-reviewer"` for all agents.
 
-**Full mode** — 4 agents:
+**Full mode** — 7 agents:
 
 | Agent | Prompt | `{FILES}` value |
 |-------|--------|-----------------|
-| macOS reviewer | macOS prompt below | All discovered `macos/` files |
-| Linux reviewer | Linux prompt below | All discovered `linux/` files |
-| Windows reviewer | Windows prompt below | All discovered `windows/` files |
-| Parity checker | Parity prompt below | All files, grouped by script type |
+| macOS reviewer | `references/prompt-macos.md` | All discovered `macos/` files |
+| Linux reviewer | `references/prompt-linux.md` | All discovered `linux/` files |
+| Windows reviewer | `references/prompt-windows.md` | All discovered `windows/` files |
+| Parity checker | `references/prompt-parity.md` | All files, grouped by script type |
+| macOS logic auditor | `references/prompt-logic.md` | All discovered `macos/` files |
+| Linux logic auditor | `references/prompt-logic.md` | All discovered `linux/` files |
+| Windows logic auditor | `references/prompt-logic.md` | All discovered `windows/` files |
 
 **Platform mode** — one agent per file:
 
@@ -64,6 +93,43 @@ Dispatch one agent per discovered file in the target folder. Use the same OS pro
 **Script-type mode** — 4 agents (scoped):
 
 Same dispatch as full mode, but `{FILES}` contains only the file(s) matching the script-type pattern per platform. The parity checker's `{ALL_FILES}` is similarly filtered.
+
+**Diff mode** — per-changed-platform + parity:
+
+Dispatch one agent per platform that has changed files, using the same OS prompt template as full mode. Set `{FILES}` to only the changed files for that platform.
+
+**Always include the parity checker**, even if only one platform has changes. The most common parity bug is changing one platform without porting to the others — the parity checker catches this. Its `{ALL_FILES}` is the full file inventory (same as full mode).
+
+| Changed files | Agents dispatched |
+|---------------|-------------------|
+| `windows/statusline.ps1` only | Windows reviewer + Parity checker (2) |
+| `macos/notify.sh`, `linux/notify.sh` | macOS + Linux reviewers + Parity checker (3) |
+| All three platforms | macOS + Linux + Windows + Parity (4, same as full) |
+
+### Logic auditor dispatch
+
+Logic auditors follow the same dispatch rules as OS reviewers across all modes:
+
+| Mode | Logic auditors dispatched |
+|------|--------------------------|
+| Full | 3 (one per OS, all files) |
+| Platform | 1 (same OS as the platform reviewers, same `{FILES}`) |
+| Script-type | 3 (scoped to matching files per platform) |
+| Diff | Per-changed-platform (same rule as OS reviewers) |
+
+Logic auditors use `references/prompt-logic.md` with platform-specific placeholder substitution. They launch in the **same single message** as all other agents for concurrency.
+
+### Reading prompt templates
+
+Before dispatching, read the relevant prompt file(s) from the `references/` directory adjacent to this skill:
+
+- `references/prompt-macos.md` — macOS reviewer prompt
+- `references/prompt-linux.md` — Linux reviewer prompt
+- `references/prompt-windows.md` — Windows reviewer prompt
+- `references/prompt-parity.md` — Cross-platform parity checker prompt
+- `references/prompt-logic.md` — Logic auditor prompt (used for all three platform logic auditors)
+
+Each file contains a fenced code block with the full prompt template. Extract the content between the ``` fences — that is the prompt to send to the subagent.
 
 ### Placeholder substitution
 
@@ -74,8 +140,82 @@ Before sending each prompt, replace these placeholders with actual values:
   `macos/statusline.sh, linux/statusline.sh, windows/statusline.ps1`
   `macos/install.sh, linux/install.sh, windows/install.ps1`
   ...etc for each discovered script type.
+- `{DIFF_CONTEXT}` — in **diff mode**: the unified diff output from `git diff HEAD -- <file>` for each file in the agent's scope. For the parity checker, diffs for all changed files grouped by platform. Preceded by this instruction block:
+
+  ````
+  ## Changed regions
+
+  Focus your review on the changed regions shown in the diff below, but still apply all
+  check categories. Flag anything in the changed code that introduces or exposes issues,
+  even if the surrounding (unchanged) code is also involved.
+
+  <diff output here>
+  ````
+
+  In **all other modes** (full, platform, script-type): empty string. The placeholder is invisible and agents behave identically to today.
+
+- `{RUNTIME_VERIFICATION}` — host-OS-aware runtime verification instructions. Detect the host OS, then for each reviewer agent:
+  - **Native platform** (e.g., macOS agent on macOS/Linux host, or Windows agent on Windows host): read the `## Runtime verification — full` section from the agent's prompt template file. Bash scripts are cross-compatible between macOS and Linux for basic testing.
+  - **Non-native platform** (e.g., macOS agent on Windows host, or Windows agent on macOS host): read the `## Runtime verification — static` section from the agent's prompt template file.
+
+  Host OS detection matrix:
+
+  | Host OS | macOS agent | Linux agent | Windows agent |
+  |---------|-------------|-------------|---------------|
+  | Windows | static | static | full |
+  | macOS   | full   | full   | static |
+  | Linux   | full   | full   | static |
+
+- `{PLATFORM}` — the platform folder name: `macos`, `linux`, or `windows`. Used only in logic auditor prompts.
+- `{LANG}` — the scripting language: `Bash` for macOS/Linux, `PowerShell` for Windows. Used only in logic auditor prompts.
+- `{LANG_NOTE}` — a one-sentence language context note. See the placeholder values table at the bottom of `references/prompt-logic.md` for the exact text per platform.
+- `{FILE_EXT}` — the file extension: `sh` for macOS/Linux, `ps1` for Windows. Used only in logic auditor prompts.
+
+Logic auditors also receive `{FILES}`, `{DIFF_CONTEXT}`, `{DETERMINISTIC_RESULTS}`, `{SUPPRESSED_SLUGS}`, and `{RUNTIME_VERIFICATION}` — identical values to the OS reviewer for the same platform. The `{RUNTIME_VERIFICATION}` host OS detection matrix applies the same way.
 
 After all agents return, proceed to Phase 1 (synthesis).
+
+## Phase 0.5 — Deterministic checks
+
+Before dispatching LLM reviewers, run the deterministic check script to catch objective, repeatable issues. These results are consistent across runs — the same codebase always produces the same output.
+
+### Running the script
+
+**On macOS/Linux hosts**, run the Bash version:
+
+```bash
+bash <skill-dir>/scripts/check-parity.sh <project-root>
+```
+
+**On Windows hosts**, run the PowerShell equivalent:
+
+```powershell
+powershell -NoProfile -File <skill-dir>/scripts/check-parity.ps1 <project-root>
+```
+
+Both scripts output the same JSON format. Use the appropriate one for the current host OS.
+
+Run with a 30-second timeout (`timeout: 30000` on the tool call). If the script times out, log a warning and proceed with `{DETERMINISTIC_RESULTS}` set to `"timed out — skipped"`. Reviewers will skip deterministic-result deduplication and rely on their own analysis.
+
+The script outputs a JSON array of pass/fail assertions. Example:
+
+```json
+[
+  {"check": "exit-0-termination", "passed": false, "file": "windows/git-refresh.ps1", "detail": "last non-blank line: Remove-Item ..."},
+  {"check": "threshold-parity", "passed": true, "file": "statusline", "detail": "CONTEXT_WARN: macOS=60, Linux=60"}
+]
+```
+
+### Reading the findings registry
+
+Read `docs/code-review/findings-registry.json` if it exists. Extract the `suppressed_slugs` array — these are findings the user has already dismissed (`false_positive`, `wont_fix`).
+
+### Injecting into prompts
+
+Add two extra placeholders to each reviewer prompt before dispatching:
+
+- `{DETERMINISTIC_RESULTS}` — the JSON output from the check script (or "skipped" on Windows)
+- `{SUPPRESSED_SLUGS}` — comma-separated list of suppressed finding slugs from the registry (or "none")
 
 ### Invocation examples
 
@@ -88,468 +228,15 @@ After all agents return, proceed to Phase 1 (synthesis).
 
 # Script-type — 3 scoped OS agents + parity checker
 /code-review of all installer scripts
-```
 
-## Subagent prompt templates
+# Diff — review only uncommitted changes
+/code-review diff
 
-### Prompt: macOS reviewer
+# Quick (alias for diff)
+/code-review quick
 
-```
-You are reviewing the macOS platform folder of the claude-status-line project — a custom
-status line for Claude Code that parses JSON from stdin and renders ANSI output.
-
-Review these files in macos/:
-  {FILES}
-
-## Project rules (from CLAUDE.md)
-
-These are the project's non-negotiable invariants:
-- **Silent degradation**: Every script MUST exit 0, even on error. Never write to stderr.
-  Breaking this crashes the Claude Code status line for users.
-- **File encoding**: .sh files must use LF line endings (enforced by .gitattributes).
-- **Naming conventions**: Bash functions use snake_case. Constants use UPPER_CASE.
-- **Robustness**: Scripts must exit 0 on empty, malformed, or missing JSON input.
-- **Debug logging**: Errors go to ~/.claude/statusline-debug.log only when STATUSLINE_DEBUG
-  is set. Never to the terminal.
-- **Git edge cases**: Git status row must handle detached HEAD, no-repo, and fresh-clone.
-- **Scope discipline**: Don't flag code just because it could be refactored or made more
-  "elegant" — only flag actual bugs, convention violations, or correctness issues.
-
-## Severity definitions
-
-- **critical**: Breaks functionality or violates the silent degradation contract (exit
-  non-zero, stderr output, crash). Must be fixed before shipping.
-- **warning**: Incorrect behavior possible under certain conditions — edge cases, race
-  conditions, missing null checks.
-- **nit**: Style or convention issue that doesn't affect behavior.
-
-## What to check
-
-### 1. Silent degradation (CRITICAL)
-- Every script MUST exit 0, even on error. A non-zero exit or stderr output crashes the
-  Claude Code status line for users.
-- No output to stderr anywhere. Redirect errors with 2>/dev/null.
-- Errors go to the debug log only when STATUSLINE_DEBUG is set.
-
-### 2. ANSI rendering correctness (statusline.sh)
-- Box characters must align — no trailing whitespace or off-by-one in padding.
-- Color thresholds: green/yellow/red transitions for context usage, rate limits, cost.
-- Reset sequences (\033[0m) after every colored span to prevent bleed.
-- The output must render correctly in terminals with different widths.
-
-### 3. Bash conventions
-- Functions: snake_case. Constants: UPPER_CASE. No exceptions.
-- Bash 4+ features only (mapfile, associative arrays). The shebang uses /usr/bin/env bash,
-  expecting Homebrew bash — not macOS default /bin/bash which is 3.2.
-- Quote all variable expansions unless intentionally word-splitting.
-- Use [[ ]] not [ ] for conditionals.
-
-### 4. macOS-specific correctness
-- stat uses -f (BSD), not -c (GNU).
-- Dependencies: jq (required), terminal-notifier (optional, for visual notifications).
-- Sound dispatch via afplay with /System/Library/Sounds/ paths.
-- Visual dispatch via terminal-notifier.
-
-### 5. JSON parsing correctness (statusline.sh)
-- All fields extracted via jq in the mapfile block must handle missing/null values gracefully.
-- Must exit 0 on empty, malformed, or missing JSON input.
-- Field paths must match the documented contract: session_id, workspace.current_dir, cwd,
-  model.display_name, context_window.context_window_size, context_window.used_percentage,
-  context_window.total_input_tokens, effort.level, cost.total_cost_usd, transcript_path,
-  rate_limits.five_hour.*, rate_limits.seven_day.*, agent.name,
-  context_window.current_usage.*
-
-### 6. Caching logic (statusline.sh)
-- Output cache keyed by hashing JSON + file modification times.
-- Git status cache uses a 5-second TTL. Verify the TTL check is correct.
-- Cache files cleaned up properly on invalidation.
-
-### 7. Installer correctness (install.sh)
-- Dependency checks (jq, terminal-notifier) with install offers.
-- settings.json merging must not clobber existing user settings.
-- Hook registration (git-refresh, notify) must be idempotent — re-running the installer
-  should not duplicate entries.
-
-### 8. Uninstaller correctness (uninstall.sh)
-- Removes the statusline script, settings.json entries, hooks, notification config, and
-  temp/cache files.
-- Must not fail if artifacts are already missing (idempotent removal).
-- Must not clobber unrelated user settings — only remove entries the installer added.
-- Should offer confirmation or dry-run where destructive.
-- Silent degradation applies here too — no stderr, exit 0.
-
-### 9. Notification handler (notify.sh)
-- Per-event config loading from notify-config.json.
-- Sound dispatch via afplay with correct system sound paths.
-- Visual dispatch via terminal-notifier with proper escaping.
-- Permission event: parses stdin JSON for tool_name and tool_input detail.
-
-### 10. git-refresh hook (git-refresh.sh)
-- Reads event JSON from stdin, filters by tool name.
-- Removes correct cache files (git cache + output cache).
-- Must not break if cache files don't exist.
-
-### 11. Runtime verification
-Don't rely solely on reading code. Where feasible, verify findings against actual behavior:
-- Pipe empty JSON through statusline: echo '{}' | bash macos/statusline.sh — should exit 0
-  with no stderr.
-- Test notify: echo '' | bash macos/notify.sh stop — should exit 0, no stderr.
-- Test git-refresh: echo '{"tool_name":"Write"}' | bash macos/git-refresh.sh
-- For install/uninstall, read to understand behavior without running destructively.
-Flag which findings you verified at runtime vs. static analysis only.
-
-## Output format
-
-Return a structured list of findings. For each issue:
-- **File**: specific file and line number (e.g., statusline.sh:247)
-- **Severity**: critical / warning / nit (see severity definitions above)
-- **Description**: what's wrong and why it matters
-- **Suggested fix**: concrete code change
-
-If a file has no issues, say so explicitly — "no issues found" is a valid and useful result.
-Only report issues you are confident about. Do not speculate or pad the list.
-```
-
-### Prompt: Linux reviewer
-
-```
-You are reviewing the Linux platform folder of the claude-status-line project — a custom
-status line for Claude Code that parses JSON from stdin and renders ANSI output.
-
-Review these files in linux/:
-  {FILES}
-
-The Linux scripts are ~95% identical to macOS. Key known differences:
-- stat uses -c (GNU coreutils) instead of -f (BSD) for file metadata
-- Notification sound uses paplay/aplay instead of afplay
-- Notification visual uses notify-send instead of terminal-notifier
-- Package manager detection differs (apt, dnf, pacman, zypper vs. brew)
-
-## Project rules (from CLAUDE.md)
-
-These are the project's non-negotiable invariants:
-- **Silent degradation**: Every script MUST exit 0, even on error. Never write to stderr.
-  Breaking this crashes the Claude Code status line for users.
-- **File encoding**: .sh files must use LF line endings (enforced by .gitattributes).
-- **Naming conventions**: Bash functions use snake_case. Constants use UPPER_CASE.
-- **Robustness**: Scripts must exit 0 on empty, malformed, or missing JSON input.
-- **Debug logging**: Errors go to ~/.claude/statusline-debug.log only when STATUSLINE_DEBUG
-  is set. Never to the terminal.
-- **Git edge cases**: Git status row must handle detached HEAD, no-repo, and fresh-clone.
-- **Scope discipline**: Don't flag code just because it could be refactored or made more
-  "elegant" — only flag actual bugs, convention violations, or correctness issues.
-
-## Severity definitions
-
-- **critical**: Breaks functionality or violates the silent degradation contract (exit
-  non-zero, stderr output, crash). Must be fixed before shipping.
-- **warning**: Incorrect behavior possible under certain conditions — edge cases, race
-  conditions, missing null checks.
-- **nit**: Style or convention issue that doesn't affect behavior.
-
-## What to check
-
-### 1. Silent degradation (CRITICAL)
-- Every script MUST exit 0, even on error. A non-zero exit or stderr output crashes the
-  Claude Code status line for users.
-- No output to stderr anywhere. Redirect errors with 2>/dev/null.
-- Errors go to the debug log only when STATUSLINE_DEBUG is set.
-
-### 2. ANSI rendering correctness (statusline.sh)
-- Box characters must align — no trailing whitespace or off-by-one in padding.
-- Color thresholds: green/yellow/red transitions for context usage, rate limits, cost.
-- Reset sequences (\033[0m) after every colored span to prevent bleed.
-- The output must render correctly in terminals with different widths.
-
-### 3. Bash conventions
-- Functions: snake_case. Constants: UPPER_CASE. No exceptions.
-- Bash 4+ required (mapfile, associative arrays). Linux distros generally ship Bash 4+.
-- Quote all variable expansions unless intentionally word-splitting.
-- Use [[ ]] not [ ] for conditionals.
-
-### 4. Linux-specific correctness
-- stat uses -c (GNU coreutils), not -f (BSD).
-- Sound dispatch via paplay/aplay — not macOS afplay.
-- Visual dispatch via notify-send — not macOS terminal-notifier.
-- Package manager detection must handle apt, dnf, pacman, zypper gracefully.
-- No macOS-isms left over from copy-paste (afplay, terminal-notifier, brew,
-  /System/Library/Sounds/, etc.).
-
-### 5. JSON parsing correctness (statusline.sh)
-- All fields extracted via jq in the mapfile block must handle missing/null values gracefully.
-- Must exit 0 on empty, malformed, or missing JSON input.
-- Field paths must match the documented contract: session_id, workspace.current_dir, cwd,
-  model.display_name, context_window.context_window_size, context_window.used_percentage,
-  context_window.total_input_tokens, effort.level, cost.total_cost_usd, transcript_path,
-  rate_limits.five_hour.*, rate_limits.seven_day.*, agent.name,
-  context_window.current_usage.*
-
-### 6. Caching logic (statusline.sh)
-- Output cache keyed by hashing JSON + file modification times.
-- Git status cache uses a 5-second TTL. Verify the TTL check is correct.
-- Cache files cleaned up properly on invalidation.
-
-### 7. Installer correctness (install.sh)
-- Dependency checks (jq, and optionally notify-send) with install offers.
-- settings.json merging must not clobber existing user settings.
-- Hook registration (git-refresh, notify) must be idempotent — re-running the installer
-  should not duplicate entries.
-
-### 8. Uninstaller correctness (uninstall.sh)
-- Removes the statusline script, settings.json entries, hooks, notification config, and
-  temp/cache files.
-- Must not fail if artifacts are already missing (idempotent removal).
-- Must not clobber unrelated user settings — only remove entries the installer added.
-- Should offer confirmation or dry-run where destructive.
-- Silent degradation applies here too — no stderr, exit 0.
-
-### 9. Notification handler (notify.sh)
-- Per-event config loading from notify-config.json.
-- Sound dispatch via paplay/aplay with correct Linux sound paths.
-- Visual dispatch via notify-send with proper escaping.
-- Permission event: parses stdin JSON for tool_name and tool_input detail.
-
-### 10. git-refresh hook (git-refresh.sh)
-- Reads event JSON from stdin, filters by tool name.
-- Removes correct cache files (git cache + output cache).
-- Must not break if cache files don't exist.
-
-### 11. Runtime verification
-Don't rely solely on reading code. Where feasible, verify findings against actual behavior:
-- Pipe empty JSON through statusline: echo '{}' | bash linux/statusline.sh — should exit 0
-  with no stderr.
-- Test notify: echo '' | bash linux/notify.sh stop — should exit 0, no stderr.
-- Test git-refresh: echo '{"tool_name":"Write"}' | bash linux/git-refresh.sh
-- For install/uninstall, read to understand behavior without running destructively.
-Flag which findings you verified at runtime vs. static analysis only.
-
-## Output format
-
-Return a structured list of findings. For each issue:
-- **File**: specific file and line number (e.g., statusline.sh:247)
-- **Severity**: critical / warning / nit (see severity definitions above)
-- **Description**: what's wrong and why it matters
-- **Suggested fix**: concrete code change
-
-If a file has no issues, say so explicitly — "no issues found" is a valid and useful result.
-Only report issues you are confident about. Do not speculate or pad the list.
-```
-
-### Prompt: Windows reviewer
-
-```
-You are reviewing the Windows platform folder of the claude-status-line project — a custom
-status line for Claude Code that parses JSON from stdin and renders ANSI output.
-
-Review these files in windows/:
-  {FILES}
-
-The Windows scripts are functionally equivalent to macOS/Linux but use PowerShell 5.1 idioms:
-- JSON parsing via ConvertFrom-Json (returns PSCustomObject, not hashtable)
-- Date handling via [DateTimeOffset]
-- Notifications via BurntToast module
-- File I/O must handle UTF-8 without BOM (PS 5.1 defaults to UTF-16 LE)
-
-## Project rules (from CLAUDE.md)
-
-These are the project's non-negotiable invariants:
-- **Silent degradation**: Every script MUST exit 0, even on error. Never write to stderr.
-  Breaking this crashes the Claude Code status line for users.
-- **File encoding**: .ps1 files must use CRLF line endings with UTF-8 BOM (enforced by
-  .gitattributes). When writing config files (settings.json, etc.), use explicit UTF-8
-  no-BOM encoding — PS 5.1 defaults to UTF-16 LE which breaks other tools.
-- **Naming conventions**: PowerShell functions use PascalCase.
-- **Robustness**: Scripts must exit 0 on empty, malformed, or missing JSON input.
-- **Debug logging**: Errors go to ~/.claude/statusline-debug.log only when
-  $env:STATUSLINE_DEBUG is set. Never to the terminal.
-- **Git edge cases**: Git status row must handle detached HEAD, no-repo, and fresh-clone.
-- **Scope discipline**: Don't flag code just because it could be refactored or made more
-  "elegant" — only flag actual bugs, convention violations, or correctness issues.
-
-## Severity definitions
-
-- **critical**: Breaks functionality or violates the silent degradation contract (exit
-  non-zero, stderr output, crash). Must be fixed before shipping.
-- **warning**: Incorrect behavior possible under certain conditions — edge cases, race
-  conditions, missing null checks.
-- **nit**: Style or convention issue that doesn't affect behavior.
-
-## What to check
-
-### 1. Silent degradation (CRITICAL)
-- Every script MUST exit 0. Use try/catch blocks, not unhandled exceptions.
-- No output to stderr. Suppress errors with -ErrorAction SilentlyContinue or try/catch.
-- Debug logging only when $env:STATUSLINE_DEBUG is set.
-
-### 2. ANSI rendering correctness (statusline.ps1)
-- Box characters must align. Write-Host -NoNewline used for inline output.
-- Color thresholds: green/yellow/red transitions must match macOS/Linux behavior.
-- ANSI escape sequences must work in Windows Terminal and PS 5.1.
-- No trailing whitespace or misaligned box edges.
-
-### 3. PowerShell conventions
-- Functions: PascalCase (e.g., Get-GitStatus, Format-ContextBar).
-- PS 5.1-compatible syntax only — no ternary (?:), no null-coalescing (??),
-  no null-conditional (?.).
-- ConvertFrom-Json returns PSCustomObject — property access must handle missing properties
-  with $null checks, not hashtable indexing.
-
-### 4. File encoding (CRITICAL)
-- .ps1 files must be CRLF with UTF-8 BOM (enforced by .gitattributes).
-- When writing files (install.ps1), use explicit UTF-8 no-BOM encoding for settings.json
-  and other config files. PS 5.1's default is UTF-16 LE which breaks other tools.
-
-### 5. JSON parsing correctness (statusline.ps1)
-- All fields from the JSON input contract must be handled.
-- Must exit 0 on empty, malformed, or missing JSON input.
-- PSCustomObject property access must not throw on missing nested properties.
-- Null/empty handling for every extracted field.
-- Field paths must match the documented contract: session_id, workspace.current_dir, cwd,
-  model.display_name, context_window.context_window_size, context_window.used_percentage,
-  context_window.total_input_tokens, effort.level, cost.total_cost_usd, transcript_path,
-  rate_limits.five_hour.*, rate_limits.seven_day.*, agent.name,
-  context_window.current_usage.*
-
-### 6. Caching logic (statusline.ps1)
-- Output cache keyed by hashing JSON + file modification times.
-- Git status cache uses a 5-second TTL. Verify the TTL check is correct.
-- Cache files cleaned up properly on invalidation.
-
-### 7. Installer correctness (install.ps1)
-- BurntToast module check and optional install.
-- Copy-WithRetry helper for locked files.
-- settings.json merging must preserve existing user settings.
-- Hook registration must be idempotent.
-- Format-Json workaround for PS 5.1's broken ConvertTo-Json indentation.
-
-### 8. Uninstaller correctness (uninstall.ps1)
-- Removes the statusline script, settings.json entries, hooks, notification config, and
-  temp/cache files.
-- Must not fail if artifacts are already missing (idempotent removal).
-- Must not clobber unrelated user settings — only remove entries the installer added.
-- Should offer confirmation or dry-run where destructive.
-- Silent degradation: no stderr, exit 0. Use try/catch and -ErrorAction.
-
-### 9. Notification handler (notify.ps1)
-- BurntToast integration for visual notifications.
-- System.Media.SoundPlayer for sound with correct Windows Media sound paths.
-- Permission event stdin parsing via [Console]::In.ReadToEnd().
-- Per-event config from notify-config.json.
-
-### 10. git-refresh hook (git-refresh.ps1)
-- Reads event JSON from stdin, filters by tool name.
-- Removes correct cache files. Must not fail if files don't exist.
-
-### 11. Runtime verification
-Don't rely solely on reading code. Where feasible, verify findings against actual behavior:
-- Pipe empty JSON through statusline:
-  '{}' | powershell -File windows\statusline.ps1 — should exit 0, no stderr.
-- Test notify: powershell -File windows\notify.ps1 stop — should exit 0, no stderr.
-- Test git-refresh:
-  '{"tool_name":"Write"}' | powershell -File windows\git-refresh.ps1
-- For install/uninstall, read to understand behavior without running destructively.
-Flag which findings you verified at runtime vs. static analysis only.
-
-## Output format
-
-Return a structured list of findings. For each issue:
-- **File**: specific file and line number (e.g., statusline.ps1:247)
-- **Severity**: critical / warning / nit (see severity definitions above)
-- **Description**: what's wrong and why it matters
-- **Suggested fix**: concrete code change
-
-If a file has no issues, say so explicitly — "no issues found" is a valid and useful result.
-Only report issues you are confident about. Do not speculate or pad the list.
-```
-
-### Prompt: Cross-platform parity checker
-
-```
-You are the cross-platform parity checker for the claude-status-line project. Your job is to
-diff behavior across all three platforms (macos/, linux/, windows/) and find drift — features,
-fixes, or behaviors present on one platform but missing or different on another.
-
-Read ALL of these files:
-  {ALL_FILES}
-
-## Project rules (from CLAUDE.md)
-
-- **Cross-platform parity**: Changes to one platform almost always require matching changes
-  on the others. macOS and Linux share Bash — keep them in sync. Windows PowerShell is
-  functionally equivalent using PS idioms.
-- **Silent degradation**: Every script MUST exit 0, even on error. Never write to stderr.
-- **File encoding**: .sh = LF line endings. .ps1 = CRLF + UTF-8 BOM.
-- **Naming**: Bash uses snake_case functions + UPPER_CASE constants. PowerShell uses PascalCase.
-
-## Severity definitions
-
-- **critical**: Breaks functionality or violates the silent degradation contract.
-- **warning**: Incorrect behavior possible under certain conditions.
-- **nit**: Style or convention issue that doesn't affect behavior.
-
-## Architecture context
-
-- macOS and Linux are both Bash and should be ~95% identical. The ONLY expected differences:
-  - stat flags: macOS uses -f, Linux uses -c
-  - Sound: macOS=afplay, Linux=paplay/aplay
-  - Visual notifications: macOS=terminal-notifier, Linux=notify-send
-  - Package managers: macOS=brew, Linux=apt/dnf/pacman/zypper
-  - Anything else that differs between macOS and Linux is likely a bug (drift).
-
-- Windows (PowerShell) is a full port. Same features, different idioms. Expected differences
-  are language-level (ConvertFrom-Json vs jq, Write-Host vs printf, etc.). But the FEATURE
-  SET and BEHAVIOR should match.
-
-## What to check
-
-### 1. Feature parity (HIGH PRIORITY)
-- Every feature in statusline.sh (context bar, git status, cost, rate limits, subagent rows,
-  idle detection, threshold notifications, burn-rate arrows, etc.) must exist on all 3 platforms.
-- Every notification event (permission, stop, compaction_start, compaction_done, rate_limit,
-  context_high) must be handled on all 3 platforms.
-- Every installer capability (dependency check, settings merge, hook registration, notification
-  config) must exist on all 3 platforms.
-
-### 2. macOS/Linux drift (HIGHEST PRIORITY)
-- These should be near-identical. Diff them carefully. Any behavioral difference beyond the
-  known platform-specific items listed above is a bug.
-- Check: same JSON fields extracted, same thresholds, same color codes, same formatting logic,
-  same cache key computation, same git status parsing.
-
-### 3. Behavioral equivalence with Windows
-- Windows may use different syntax but must produce the same visual output and handle the same
-  edge cases.
-- Check: same threshold values, same color mappings, same row ordering, same cache TTLs,
-  same notification events and messages.
-
-### 4. Installer parity
-- All three installers should register the same hooks, create the same config structure,
-  and offer equivalent setup flows.
-
-### 5. Uninstaller parity
-- All three uninstallers should clean up equivalent artifacts.
-
-## Output format
-
-For each finding, cite specific file and line number (e.g., macos/statusline.sh:247, not
-"lines 240-260").
-
-Group findings by type:
-
-**macOS/Linux drift** (these are likely bugs — should be near-identical):
-- File pair, what differs, which side is correct (or if unclear, flag for review)
-
-**Feature gaps** (present on some platforms, missing on others):
-- Feature name, which platforms have it, which don't
-
-**Behavioral divergence** (same feature, different behavior):
-- What the difference is, which platform(s) diverge, suggested resolution
-
-**Threshold/constant mismatches**:
-- Variable name, values on each platform, which is correct
-
-Only report real differences. Syntactic differences between Bash and PowerShell that produce
-identical behavior are NOT findings. Focus on semantic and behavioral drift.
+# Auto-detect — prompts if dirty tree, else runs full
+/code-review
 ```
 
 ## Phase 1 — Write the master list to file
@@ -565,168 +252,63 @@ Write the file to `docs/code-review/`, creating the directory if needed. Use a s
 | Full | `YYYY-MM-DD-code-review.md` |
 | Platform | `YYYY-MM-DD-code-review-{platform}.md` (e.g., `2026-05-20-code-review-macos.md`) |
 | Script-type | `YYYY-MM-DD-code-review-{script-type}.md` (e.g., `2026-05-20-code-review-installer.md`) |
+| Diff | `YYYY-MM-DD-code-review-diff.md` |
 
 Use the first alias from the keyword mapping table as the slug (e.g., `installer`, not `install`). If a file with the same name already exists, overwrite it (a re-run supersedes the previous review).
 
 ### Report format
 
-Use the template below verbatim as the skeleton. Fill in dynamic values where indicated.
-
-````markdown
-# Code Review — claude-status-line
-
-> **Date:** YYYY-MM-DD
-> **Reviewed by:** N parallel subagents (list agent roles based on dispatch mode)
-> **Scope:** Describe the actual review scope (e.g., "All platform scripts", "macOS platform — 5 files", "Installer scripts across all platforms")
+Read the report template, formatting rules, and deduplication/disagreement handling from `references/report-template.md` adjacent to this skill. That file contains the full markdown skeleton and all output conventions.
 
 ---
 
-## Summary
+## Phase 1.5 — Update the findings registry
 
-| Severity | Count |
-|----------|------:|
-| Critical | N     |
-| Warning  | N     |
-| Parity   | N     |
-| Nit      | N     |
-| **Total**| **N** |
+> **Diff mode:** Skip this phase entirely. Diff mode does not write to the findings registry. It still *reads* `suppressed_slugs` from the registry (in Phase 0.5) to filter known false positives.
 
-**Files reviewed:** N &nbsp;&nbsp;|&nbsp;&nbsp; **Clean files:** N &nbsp;&nbsp;|&nbsp;&nbsp; **Files with findings:** N
+After writing the master list, update the persistent findings registry at `docs/code-review/findings-registry.json`. This tracks findings across runs so you can see which bugs are consistently found (high confidence) vs. one-off noise.
 
----
+### Registry schema
 
-## Critical Issues
-
-> Items that break functionality or violate the silent degradation contract. Must fix before shipping.
-
-If none, write: *No critical issues found.*
-
-Otherwise, for each finding use this block:
-
----
-
-### C-N: `<short title>`
-
-| | |
-|---|---|
-| **File** | `path/file.ext:LINE` |
-| **Severity** | Critical |
-| **Source** | macOS reviewer / Linux reviewer / Windows reviewer / Parity checker |
-
-> In platform mode, append the file to disambiguate per-file agents (e.g., "macOS reviewer (notify.sh)").
-
-**Description**
-
-<1-3 sentences: what's wrong and why it matters>
-
-**Suggested fix**
-
-```diff
-- <old code>
-+ <new code>
+```json
+{
+  "last_updated": "YYYY-MM-DD",
+  "findings": [
+    {
+      "id": "f-001",
+      "fingerprint": "windows/statusline.ps1::start-process-nonewwindow-leak",
+      "file": "windows/statusline.ps1",
+      "slug": "start-process-nonewwindow-leak",
+      "description": "Start-Process -NoNewWindow leaks child stdout into statusline stream",
+      "severity": "critical",
+      "first_seen": "2026-05-21",
+      "last_seen": "2026-05-21",
+      "hit_count": 1,
+      "status": "new",
+      "status_reason": ""
+    }
+  ],
+  "suppressed_slugs": []
+}
 ```
 
----
+### Update procedure
 
-## Warnings
+For each finding in the master list:
 
-> Incorrect behavior possible under certain conditions — edge cases, race conditions, missing guards.
+1. **Compute the fingerprint**: `file_path::slug` (e.g., `windows/statusline.ps1::start-process-nonewwindow-leak`)
+2. **Check the registry** for a matching fingerprint:
+   - **Match found**: increment `hit_count`, update `last_seen` to today, keep existing `status`
+   - **No match**: add a new entry with `hit_count: 1`, `status: "new"`, today's date for `first_seen` and `last_seen`
+3. **Annotate the finding** in the master list report with registry info: "NEW" for first-time findings, "seen N times (status)" for recurring ones
 
-If none, write: *No warnings found.*
+### Stale entry detection
 
-Same finding block format as Critical, but numbered W-N.
+After processing all current findings, scan registry entries that were NOT seen in this run. If a finding's `file` path no longer exists or the code at the referenced location has changed substantially, mark it with `"status": "stale"` and add it to a "Stale Findings" note at the end of the report.
 
----
+### If the registry doesn't exist
 
-## Cross-Platform Parity
-
-> Drift, feature gaps, and behavioral divergence across macOS, Linux, and Windows.
-
-If none, write: *All platforms are in sync.*
-
-For parity findings, use a comparison table inside the finding block:
-
----
-
-### P-N: `<short title>`
-
-| | |
-|---|---|
-| **Files** | `macos/file.sh:LINE`, `linux/file.sh:LINE`, `windows/file.ps1:LINE` |
-| **Severity** | Warning / Nit / Review |
-| **Source** | Parity checker |
-
-**Description**
-
-<what differs and why it matters>
-
-| Platform | Behavior |
-|----------|----------|
-| macOS    | <what macOS does> |
-| Linux    | <what Linux does> |
-| Windows  | <what Windows does> |
-
-**Suggested resolution**
-
-<which platform is correct, or flag for human review if unclear>
-
----
-
-## Nits
-
-> Style and convention issues that don't affect behavior.
-
-If none, write: *No nits found.*
-
-For nits, use a compact table — one row per finding, no expanded blocks:
-
-| # | File | Description | Suggested fix |
-|---|------|-------------|---------------|
-| N-1 | `path:LINE` | ... | ... |
-| N-2 | `path:LINE` | ... | ... |
-
----
-
-## Clean Files
-
-> These files were reviewed and had no issues.
-
-| Platform | File | Status |
-|----------|------|--------|
-| macOS    | `statusline.sh` | Clean |
-| macOS    | `install.sh` | Clean |
-| ...      | ... | ... |
-
----
-
-## Recommended Fix Order
-
-> Prioritized action plan. Only includes CONFIRMED and PARTIAL findings from verification.
-
-*Populated after Phase 2 verification.*
-
----
-
-*Review generated by claude-status-line code-review skill.*
-````
-
-### Formatting rules
-
-- **Finding IDs**: prefix with severity letter and sequential number — `C-1`, `C-2` for criticals, `W-1`, `W-2` for warnings, `P-1`, `P-2` for parity, `N-1`, `N-2` for nits. These make findings easy to reference in discussion.
-- **Diff blocks**: use ` ```diff ` fenced blocks for suggested fixes so added/removed lines render in green/red.
-- **Empty sections**: always include every section header even if empty — write the "none found" message. This confirms the category was checked, not skipped.
-- **Horizontal rules** (`---`): place one between each expanded finding block to visually separate them.
-- **Tables**: use right-aligned count column in the summary table (`------:|`).
-- **Backtick paths**: always wrap file paths and line references in backticks.
-- **No emojis.** Use text labels for severity, not icons.
-
-### Deduplication and disagreement handling
-
-- If the parity checker and an OS agent both flag the same issue, merge into one entry. Prefer the more specific description.
-- **Platform agent vs. parity checker**: Prefer the platform-specific agent's judgment on whether behavior is correct for that platform. Prefer the parity checker's judgment on whether platforms should match.
-- **Contradictory fixes**: If two agents suggest different fixes, include both and flag the disagreement for human review. Don't silently pick one.
-- **Bug vs. intentional**: If one agent flags something as a bug and another implies it's intentional, use severity "review" with both perspectives.
-- **Confidence mismatch**: If one agent is confident and another hedges, include the finding but note the split confidence.
+Create it with an empty `findings` array and empty `suppressed_slugs`. This is the first run.
 
 ---
 
@@ -746,6 +328,37 @@ For each finding in the master list:
    - `FALSE POSITIVE` — the issue does not exist, or the code is actually correct
    - `PARTIAL` — the issue is real but the description or line number is slightly off
 5. **Write a 1-2 sentence reason** explaining the verdict.
+6. **Triage the finding** via `AskUserQuestion`. The question depends on the verdict:
+
+   **For CONFIRMED / PARTIAL findings:**
+
+   > "<ID> confirmed: <short description>. What's your call?"
+
+   | Option | Registry effect |
+   |--------|-----------------|
+   | Fix later (default) | Keeps `status: new` |
+   | Won't fix | Sets `status: wont_fix`, adds slug to `suppressed_slugs` |
+   | Actually false positive | Sets `status: false_positive`, adds slug to `suppressed_slugs` |
+
+   **For FALSE POSITIVE findings:**
+
+   > "<ID> appears to be a false positive: <reason>. Suppress in future reviews?"
+
+   | Option | Registry effect |
+   |--------|-----------------|
+   | Yes, suppress (default) | Sets `status: false_positive`, adds slug to `suppressed_slugs` |
+   | No, keep it | Keeps `status: new` |
+
+7. **Update the registry immediately** after each triage decision. Edit `docs/code-review/findings-registry.json` in place — do not batch. This ensures the registry is consistent even if the session ends mid-verification.
+
+8. **Annotate the report** with the triage decision after the verification line:
+
+   ```markdown
+   **Verification: CONFIRMED** — reason here
+   **Triage: won't fix** — user dismissed: <reason from user or status_reason>
+   ```
+
+   For findings kept for fixing (the default), no triage annotation is needed.
 
 ### Updating the file
 
@@ -775,13 +388,13 @@ After verifying each finding, edit the master list file in place. Add the verifi
 **After verification is complete**, update the summary table to add a verification breakdown:
 
 ```markdown
-| Severity | Count | Confirmed | False Positive | Partial |
-|----------|------:|----------:|---------------:|--------:|
-| Critical | N     | N         | N              | N       |
-| Warning  | N     | N         | N              | N       |
-| Parity   | N     | N         | N              | N       |
-| Nit      | N     | N         | N              | N       |
-| **Total**| **N** | **N**     | **N**           | **N**   |
+| Severity | Count | Confirmed | False Positive | Partial | Dismissed |
+|----------|------:|----------:|---------------:|--------:|----------:|
+| Critical | N     | N         | N              | N       | N         |
+| Warning  | N     | N         | N              | N       | N         |
+| Parity   | N     | N         | N              | N       | N         |
+| Nit      | N     | N         | N              | N       | N         |
+| **Total**| **N** | **N**     | **N**          | **N**   | **N**     |
 ```
 
 Do NOT apply fixes or modify source code during verification. The verification phase produces annotations only — the user decides what to fix.
@@ -800,7 +413,7 @@ After all findings are verified, populate the "Recommended Fix Order" section in
 4. **Single-platform warnings** — isolated issues
 5. **Nits** — lowest priority, batch together
 
-Only include CONFIRMED and PARTIAL findings. Omit FALSE POSITIVEs.
+Only include CONFIRMED and PARTIAL findings that were NOT dismissed during triage (i.e., user chose "Fix later"). Omit FALSE POSITIVEs and user-dismissed findings.
 
 Use this table format:
 
@@ -814,6 +427,126 @@ Use this table format:
 
 For each row, note whether the fix should be applied atomically across platforms (to maintain parity) or can be done independently.
 
+### Plan generation hook
+
+When the user asks to fix findings (e.g., "fix these", "use /writing-plans to fix the findings"), and the fix plan is generated via `/writing-plans`, **you must append a final task** to the generated plan that invokes Phase 3. This is how Phase 3 gets triggered — it is a concrete task in the plan, not an implicit post-step.
+
+The final task in the plan should read:
+
+````markdown
+### Task N: Update findings registry
+
+**Files:**
+- Modify: `docs/code-review/findings-registry.json`
+- Modify: `docs/code-review/YYYY-MM-DD-code-review.md`
+
+- [ ] **Step 1: Update the findings registry**
+
+For each finding fixed by the preceding tasks, update its entry in `docs/code-review/findings-registry.json`:
+- Set `"status"` to `"fixed"`
+- Set `"status_reason"` to a summary of the fix including the actual code change
+
+- [ ] **Step 2: Annotate the code review report**
+
+For each fixed finding in the code review report, append after the verification line:
+
+```markdown
+**Fix applied** — <one-line summary of the change>
+```
+
+Update the summary table to add a "Fixed" column with counts.
+````
+
+This ensures the registry update is a tracked, executable step — not something the orchestrator has to remember.
+
+---
+
+## Phase 3 — Post-fix registry update
+
+After findings are fixed (via `/writing-plans` → plan execution, or manual edits), update the findings registry and code review report to record what changed. This is the final step after fixes are applied.
+
+### Trigger
+
+Phase 3 is triggered by the final task in a code-review fix plan (see "Plan generation hook" above). It can also be invoked manually if the user says "update the registry" or "mark findings as fixed" after making changes themselves.
+
+### Procedure
+
+For each finding that was targeted by the fix plan:
+
+1. **Read the modified file** at the location cited in the finding. Read enough context (~10 lines around the change) to capture the fix.
+
+2. **Extract the fix code.** Compare the current code against the finding's "Suggested fix" to confirm the change was applied. The relevant code is what replaced the problematic pattern — not the entire function or block.
+
+3. **Update the registry entry** in `docs/code-review/findings-registry.json`:
+   - Set `"status": "fixed"`
+   - Set `"status_reason"` to a concise description of the fix including the actual code. Format:
+
+     ```
+     <one-line summary of what changed>:\n<the key lines of the fix, as they appear in the file>
+     ```
+
+     Keep it short — just the lines that directly address the finding, not surrounding context. Use `\n` for line breaks within the JSON string.
+
+4. **Leave non-fixed findings unchanged.** Only update entries for findings that were actually addressed. Findings the user dismissed (`false_positive`, `wont_fix`) or chose not to fix retain their existing status.
+
+### Findings not targeted by the plan
+
+If the user only fixed a subset of findings, the remaining `"new"` entries stay as-is. They will be re-evaluated on the next review run — if the code has changed enough that the finding no longer applies, stale-entry detection (Phase 1.5) will catch it.
+
+### Status values reference
+
+| Status | Meaning | Set by |
+|--------|---------|--------|
+| `new` | First-time finding, not yet acted on | Phase 1.5 (review run) |
+| `fixed` | Code changed to resolve the finding | Phase 3 (post-fix) |
+| `false_positive` | Finding is incorrect — the code is right | User triage |
+| `wont_fix` | Finding is real but intentional | User triage |
+| `stale` | Code changed substantially; finding may no longer apply | Phase 1.5 (stale detection) |
+
+### Registry schema addition
+
+The `"fixed"` status uses the same schema as other statuses. No new fields required — `status_reason` carries the fix details. Example:
+
+```json
+{
+  "id": "f-002",
+  "fingerprint": "windows/statusline.ps1::start-process-nonewwindow-leak",
+  "file": "windows/statusline.ps1",
+  "slug": "start-process-nonewwindow-leak",
+  "description": "Start-Process -NoNewWindow may flash console window when parent has no visible console",
+  "severity": "warning",
+  "first_seen": "2026-05-21",
+  "last_seen": "2026-05-21",
+  "hit_count": 1,
+  "status": "fixed",
+  "status_reason": "Replaced -NoNewWindow with -WindowStyle Hidden at both notification dispatch sites:\nStart-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList ..."
+}
+```
+
+### Updating the code review report
+
+After updating the registry, also update the code review report (`docs/code-review/YYYY-MM-DD-code-review.md`):
+
+1. Add a `**Fix applied**` annotation to each fixed finding block, after the verification line:
+
+   ```markdown
+   **Verification: CONFIRMED** — <reason>
+
+   **Fix applied** — <one-line summary of the change>
+   ```
+
+2. Update the summary table to add a "Fixed" column:
+
+   ```markdown
+   | Severity | Count | Confirmed | False Positive | Partial | Fixed |
+   |----------|------:|----------:|---------------:|--------:|------:|
+   | Critical | N     | N         | N              | N       | N     |
+   | Warning  | N     | N         | N              | N       | N     |
+   | Parity   | N     | N         | N              | N       | N     |
+   | Nit      | N     | N         | N              | N       | N     |
+   | **Total**| **N** | **N**     | **N**          | **N**   | **N** |
+   ```
+
 ---
 
 ## Tips
@@ -825,3 +558,4 @@ For each row, note whether the fix should be applied atomically across platforms
 - The reviewing subagents have runtime verification instructions. Findings they verified by actually running the scripts are higher confidence — weight them accordingly in the synthesis.
 - The verification pass is sequential (one Read per finding). On a large finding list this may take many tool calls — that's expected and correct.
 - **Choosing a scope**: Use platform mode for single-OS deep dives (e.g., debugging a macOS-only issue). Use script-type mode when porting a feature or fix across platforms — it reviews the same script on all three OSes plus parity in one pass.
+- **Diff mode** is designed for pre-commit quick checks. It dispatches fewer agents (only platforms with changes + parity) and skips registry writes. Use it to catch issues in uncommitted work before running a full review.
