@@ -31,6 +31,12 @@ human_size() {
     else printf "%d B" "$b"; fi
 }
 
+# --- Bash version check ---
+if (( BASH_VERSINFO[0] < 4 )); then
+    err "bash 4+ required (found $BASH_VERSION). Upgrade via your package manager."
+    exit 1
+fi
+
 # --- Header ---
 echo ""
 cat <<'BANNER'
@@ -410,3 +416,4 @@ echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate.\n"
 echo ""
+exit 0

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code statusLine script for macOS.
 
+# @parity:constant CACHE_VERSION=1
 CACHE_VERSION="1"
 
 if ! command -v jq &>/dev/null; then
@@ -8,7 +9,7 @@ if ! command -v jq &>/dev/null; then
     exit 0
 fi
 
-# --- ANSI ---
+# @parity:colors-begin
 ESC=$'\033'
 RESET="${ESC}[0m"
 DIM="${ESC}[2m"
@@ -22,6 +23,7 @@ BLUE="${ESC}[34m"
 WHITE="${ESC}[37m"
 GRAY="${ESC}[90m"
 BAR_EMPTY="${ESC}[38;5;242m"
+# @parity:colors-end
 
 # --- Debug log ---
 LOG_PATH="$HOME/.claude/statusline-debug.log"
@@ -43,7 +45,7 @@ if ! printf '%s' "$raw" | jq -e '.' &>/dev/null; then
 fi
 log_msg "json parse: OK"
 
-# --- Extract all JSON fields in one pass ---
+# @parity:json-extract-begin
 mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
     (.session_id // ""),
     (.workspace.current_dir // ""),
@@ -90,6 +92,7 @@ J_RATE_7D_RESETS="${_jf[18]}"
 J_AGENT_NAME="${_jf[19]}"
 J_AGENT_IN="${_jf[20]}"
 J_AGENT_OUT="${_jf[21]}"
+# @parity:json-extract-end
 
 # --- Idle-state fast path ---
 _oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
@@ -104,6 +107,7 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -f %m "$_oc_sdir" 2>/dev/null)
 fi
+# @parity:cache OUTPUT_BUCKET=5
 _oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | cksum)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
@@ -194,6 +198,8 @@ pct_int=""
 pct_color="$WHITE"
 if [[ -n "$used_pct" ]]; then
     pct_int=$(printf '%.0f' "$used_pct" 2>/dev/null)
+# @parity:threshold CONTEXT_CRIT=85
+# @parity:threshold CONTEXT_WARN=60
     if (( pct_int >= 85 )); then   pct_color="$RED"
     elif (( pct_int >= 60 )); then pct_color="$YELLOW"
     else                           pct_color="$GREEN"
@@ -273,9 +279,10 @@ if [[ -f "$git_index" ]]; then
     git_use_cache=false
 
     if [[ -f "$git_cache_path" ]]; then
-        IFS='|' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"
+        IFS=$'\x1f' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"
         if [[ "$gc_mt" == "$git_index_mt" ]]; then
             gc_file_age=$(( _oc_now - $(stat -f %m "$git_cache_path" 2>/dev/null || echo 0) ))
+# @parity:cache GIT_TTL=5
             if (( gc_file_age < 5 )); then
                 branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
                 ahead="${gc_ahead:-0}"; behind="${gc_behind:-0}"; stash="${gc_stash:-0}"
@@ -287,6 +294,9 @@ if [[ -f "$git_index" ]]; then
     if [[ "$git_use_cache" != true ]]; then
         if git --no-optional-locks -C "$git_cwd" rev-parse --is-inside-work-tree &>/dev/null; then
             branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+            if [[ "$branch" == "HEAD" ]]; then
+                branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --short HEAD 2>/dev/null) || branch="HEAD"
+            fi
             if [[ -n "$branch" ]]; then
                 diff_stat=$(git --no-optional-locks -C "$git_cwd" diff --shortstat HEAD 2>/dev/null)
                 if [[ -n "$diff_stat" ]]; then
@@ -302,7 +312,7 @@ if [[ -f "$git_index" ]]; then
                 stash="${stash##* }"
             fi
         fi
-        printf '%s|%s|%s|%s|%s|%s|%s|%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null
     fi
 fi
 
@@ -326,6 +336,7 @@ total_cost="$J_TOTAL_COST"
 
 if [[ -n "$total_cost" ]]; then
     cost_fmt=$(awk -v c="$total_cost" 'BEGIN { printf "$%.4f", c }')
+# @parity:threshold COST_WARN=0.50
     cost_gt=$(awk -v c="$total_cost" 'BEGIN { print (c > 0.50) ? 1 : 0 }')
     if (( cost_gt )); then cost_color="$YELLOW"; else cost_color="$GREEN"; fi
     cost_part="${cost_color}${cost_fmt}${RESET}"
@@ -616,7 +627,7 @@ if [[ -n "$agent_name" ]]; then
     agent_compact=""
     local_sep="  ${GRAY}·${RESET}  "
     if [[ -n "$pct_int" ]]; then
-        agent_compact+="${local_sep}${pct_color}${pct_int}%${RESET}"
+        agent_compact="${pct_color}${pct_int}%${RESET}${local_sep}"
     fi
     agent_in="$J_AGENT_IN"
     agent_out="$J_AGENT_OUT"
@@ -624,8 +635,8 @@ if [[ -n "$agent_name" ]]; then
     out_fmt=$(format_tokens "${agent_out:-0}")
     [[ -z "$in_fmt" ]] && in_fmt="0"
     [[ -z "$out_fmt" ]] && out_fmt="0"
-    agent_compact+="${local_sep}${DIM}in${RESET} ${WHITE}${in_fmt}${RESET}  ${DIM}out${RESET} ${WHITE}${out_fmt}${RESET}"
-    agent_part+="  ${agent_compact}"
+    agent_compact+="${DIM}in${RESET} ${WHITE}${in_fmt}${RESET}  ${DIM}out${RESET} ${WHITE}${out_fmt}${RESET}"
+    agent_part+="${local_sep}${agent_compact}"
 fi
 
 # --- 7b. Subagent context ---
@@ -714,6 +725,7 @@ fi
 
 # --- Assemble ---
 # Two sections separated by heavy divider; thin ┼ between rows within a section.
+# @parity:constant LABEL_W=7
 LABEL_W=7
 row_sep="  ${GRAY}·${RESET}  "
 
@@ -870,3 +882,4 @@ if [[ -n "$J_SESSION_ID" ]]; then
 fi
 printf '%s' "$output"
 log_msg "stdout write: OK"
+exit 0

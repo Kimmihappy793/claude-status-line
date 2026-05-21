@@ -368,3 +368,4 @@ echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate.\n"
 echo ""
+exit 0

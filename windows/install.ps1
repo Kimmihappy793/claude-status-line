@@ -1,6 +1,6 @@
 # Claude Code Status Line -- Installer for Windows
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
-if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
+if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; exit 1 }
 
 $repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"
 $claudeDir = "$env:USERPROFILE\.claude"
@@ -500,3 +500,4 @@ Write-Host ""
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate."
 Write-Host ""
+exit 0

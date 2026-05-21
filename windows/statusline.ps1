@@ -2,9 +2,10 @@
 # Claude Code statusLine for Windows PowerShell.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
+# @parity:constant CACHE_VERSION=1
 $CacheVersion = "1"
 
-# --- ANSI helpers ---
+# @parity:colors-begin
 $ESC  = [char]27
 function Ansi($code) { "$ESC[$($code)m" }
 $RESET   = Ansi 0
@@ -19,6 +20,7 @@ $BLUE    = Ansi 34
 $WHITE   = Ansi 37
 $GRAY    = Ansi 90
 $BAR_EMPTY = Ansi '38;5;242'
+# @parity:colors-end
 # --- Read stdin + debug log ---
 # Always exit 0 — any non-zero exit makes Claude Code hide the status line entirely.
 $logPath = "$env:USERPROFILE\.claude\statusline-debug.log"
@@ -99,6 +101,7 @@ if ($_ocTranscriptPath) {
         $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
     }
 }
+# @parity:cache OUTPUT_BUCKET=5
 $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
 $_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
 $_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_ocKeyInput))).Replace('-','')
@@ -117,6 +120,7 @@ if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue
     }
 }
 
+# @parity:json-extract-begin
 # --- 1. CWD ---
 $sessionId = Get-Val $json @('session_id')
 $cwd = Get-Val $json @('workspace','current_dir')
@@ -154,6 +158,8 @@ $pctInt   = $null
 $pctColor = $WHITE
 if ($null -ne $usedPct) {
     $pctInt   = [int][Math]::Round($usedPct)
+    # @parity:threshold CONTEXT_CRIT=85
+    # @parity:threshold CONTEXT_WARN=60
     $pctColor = if ($pctInt -ge 85) { $RED } elseif ($pctInt -ge 60) { $YELLOW } else { $GREEN }
 }
 $modelPart = "${MAGENTA}${modelShort}${RESET}"
@@ -205,15 +211,16 @@ try {
     $gitIndex = Join-Path $gitCwd '.git\index'
     if (Test-Path -LiteralPath $gitIndex) {
         $gitIndexMt = (Get-Item -LiteralPath $gitIndex -Force).LastWriteTimeUtc.Ticks
-        $safeSessionId = $sessionId -replace '[^a-zA-Z0-9_-]', ''
-        $gitCachePath = Join-Path $env:TEMP "statusline-git-$safeSessionId.txt"
+        $safeSessionId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
+        $gitCachePath = if ($safeSessionId) { Join-Path $env:TEMP "statusline-git-$safeSessionId.txt" } else { $null }
         $gitUseCache = $false
         $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
 
-        if (Test-Path -LiteralPath $gitCachePath) {
-            $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
+        if ($gitCachePath -and (Test-Path -LiteralPath $gitCachePath)) {
+            $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split ([char]0x1F)
             if ($gc.Count -ge 5 -and $gc[0] -eq "$gitIndexMt") {
                 $cacheAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $gitCachePath -Force).LastWriteTimeUtc).TotalSeconds
+                # @parity:cache GIT_TTL=5
                 if ($cacheAge -lt 5) {
                     $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
                     $ahead  = if ($gc.Count -ge 8) { [int]$gc[5] } else { 0 }
@@ -225,7 +232,15 @@ try {
         }
 
         if (-not $gitUseCache) {
-            $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
+            $branch = $null
+            $isWorkTree = & git --no-optional-locks -C $gitCwd rev-parse --is-inside-work-tree 2>$null
+            if ($isWorkTree -eq 'true') {
+                $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
+                if ($branch -eq 'HEAD') {
+                    $short = & git --no-optional-locks -C $gitCwd rev-parse --short HEAD 2>$null
+                    if ($short) { $branch = $short }
+                }
+            }
             if ($branch -and $LASTEXITCODE -eq 0) {
                 $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
                 $insertions = 0; $deletions = 0
@@ -242,7 +257,7 @@ try {
                 }
                 $stash = @(& git --no-optional-locks -C $gitCwd stash list 2>$null).Count
             } else { $branch = $null }
-            try { [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt|$branch|$insertions|$deletions|$untracked|$ahead|$behind|$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+            if ($gitCachePath) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
         }
 
         if ($branch) {
@@ -268,6 +283,7 @@ $totalCost = Get-Val $json @('cost','total_cost_usd')
 if ($null -eq $totalCost) { $totalCost = Get-Val $json @('total_cost_usd') }
 if ($null -ne $totalCost) {
     $costFmt  = '${0:F4}' -f [double]$totalCost
+    # @parity:threshold COST_WARN=0.50
     $costColor = if ([double]$totalCost -gt 0.50) { $YELLOW } else { $GREEN }
     $costPart = "${costColor}${costFmt}${RESET}"
 }
@@ -477,7 +493,7 @@ function Format-Window([string]$label, $pctVal, $resetsAt, [int]$windowSecs) {
         $remaining = [int]$resetsAt - $now
         if ($remaining -gt 0 -and $remaining -le $windowSecs) {
             # Compare actual pct against linear-pace expectation; +delta = over pace, -delta = under.
-            $expectedPct = ($windowSecs - $remaining) * 100.0 / $windowSecs
+            $expectedPct = [int][Math]::Truncate(($windowSecs - $remaining) * 100 / $windowSecs)
             $delta = $pct - $expectedPct
             if ([Math]::Abs($delta) -ge 1) {
                 $burnInt = [int][Math]::Truncate([Math]::Abs($delta))
@@ -512,19 +528,19 @@ $agentName = Get-Val $json @('agent','name')
 if ($agentName) {
     $agentPart = "${BLUE}${BOLD}${agentName}${RESET}"
     $agentCompact = ''
+    $sep = "  ${GRAY}$([char]0x00B7)${RESET}  "
     if ($null -ne $pctInt) {
-        $sep = "  ${GRAY}$([char]0x00B7)${RESET}  "
-        $agentCompact += "${sep}${pctColor}${pctInt}%${RESET}"
+        $agentCompact = "${pctColor}${pctInt}%${RESET}${sep}"
     }
     $agentIn  = Get-Val $json @('context_window','current_usage','input_tokens') 0
     $agentOut = Get-Val $json @('context_window','current_usage','output_tokens') 0
+# @parity:json-extract-end
     $inFmt  = Format-Tokens $agentIn
     $outFmt = Format-Tokens $agentOut
     if (-not $inFmt)  { $inFmt  = '0' }
     if (-not $outFmt) { $outFmt = '0' }
-    $sep2 = "  ${GRAY}$([char]0x00B7)${RESET}  "
-    $agentCompact += "${sep2}${DIM}in${RESET} ${WHITE}${inFmt}${RESET}  ${DIM}out${RESET} ${WHITE}${outFmt}${RESET}"
-    $agentPart += "  ${agentCompact}"
+    $agentCompact += "${DIM}in${RESET} ${WHITE}${inFmt}${RESET}  ${DIM}out${RESET} ${WHITE}${outFmt}${RESET}"
+    $agentPart += "${sep}${agentCompact}"
 }
 # --- 7b. Subagent context ---
 # One row per ACTIVE subagent (last assistant stop_reason != "end_turn").
@@ -627,6 +643,7 @@ function Get-Vis([string]$s) {
     if (-not $s) { return 0 }
     return ($s -replace $ansiPattern, '').Length
 }
+# @parity:constant LABEL_W=7
 $LABEL_W = 7  # longest label: "context"
 # Rows with empty content are dropped — box auto-hides sections with no data.
 $rowSep = "  ${GRAY}$([char]0x00B7)${RESET}  "
@@ -737,7 +754,7 @@ if ($_ocSafeId) {
     $notifyScript = "$env:USERPROFILE\.claude\notify.ps1"
 
     if ($_ctxPct -ge $_ctxThresh -and -not $_nsCtx) {
-        if (Test-Path $notifyScript) { Start-Process -NoNewWindow -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" context_high $_ctxPct" }
+        if (Test-Path $notifyScript) { Start-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" context_high $_ctxPct" }
         $_nsCtx = $true; $_nsChanged = $true
         Write-Log "notify: context_high fired at ${_ctxPct}%"
     } elseif ($_ctxPct -lt $_ctxThresh -and $_nsCtx) {
@@ -750,7 +767,7 @@ if ($_ocSafeId) {
         Write-Log "notify: rate_limit reset (resets_at changed)"
     }
     if ($_rateMax -ge $_rateThresh -and -not $_nsRate) {
-        if (Test-Path $notifyScript) { Start-Process -NoNewWindow -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" rate_limit $_rateMax" }
+        if (Test-Path $notifyScript) { Start-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" rate_limit $_rateMax" }
         $_nsRate = $true; $_nsChanged = $true
         Write-Log "notify: rate_limit fired at ${_rateMax}%"
     }
@@ -771,3 +788,4 @@ if ($_ocPath) {
 }
 Write-Host $finalOutput -NoNewline
 Write-Log "stdout write: OK (via Write-Host)"
+exit 0

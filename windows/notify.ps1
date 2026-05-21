@@ -3,7 +3,7 @@ param([string]$Event, [string]$Value)
 if (-not $Event) { exit 0 }
 
 $stdinData = $null
-if ($Event -eq 'permission') {
+if ($Event -eq 'permission' -and [Console]::IsInputRedirected) {
     try { $stdinData = [Console]::In.ReadToEnd() } catch {}
 }
 

@@ -1,6 +1,6 @@
 # Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
-if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Error "PowerShell 5.1 or later required (current: $($PSVersionTable.PSVersion))"; exit 1 }
+if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; exit 1 }
 
 $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
@@ -22,6 +22,7 @@ $GRAY   = "$ESC[90m"
 function Step([string]$msg)  { Write-Host "  ${CYAN}${BOLD}>>>${RESET} $msg" }
 function Ok([string]$msg)    { Write-Host "  ${GREEN}${BOLD} +${RESET} $msg" }
 function Warn([string]$msg)  { Write-Host "  ${YELLOW}${BOLD} !${RESET} $msg" }
+function Err([string]$msg)   { Write-Host "  ${RED}${BOLD} x${RESET} $msg" }
 function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
 function HumanSize([long]$bytes) {
     if ($bytes -ge 1MB) { return "{0:N1} MB" -f ($bytes / 1MB) }
@@ -264,3 +265,4 @@ Write-Host ""
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar."
 Write-Host ""
+exit 0

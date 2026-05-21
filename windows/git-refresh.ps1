@@ -16,3 +16,4 @@ if (-not $sessionId) { exit 0 }
 $safeId = $sessionId -replace '[^a-zA-Z0-9_-]', ''
 Remove-Item (Join-Path $env:TEMP "statusline-git-$safeId.txt") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:TEMP "statusline-oc-$safeId.txt") -Force -ErrorAction SilentlyContinue
+exit 0

@@ -21,6 +21,7 @@ GRAY=$'\033[90m'
 step() { printf "  ${CYAN}${BOLD}>>>${RESET} %s\n" "$1"; }
 ok()   { printf "  ${GREEN}${BOLD} +${RESET} %s\n" "$1"; }
 warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
+err()  { printf "  ${RED}${BOLD} x${RESET} %s\n" "$1"; }
 info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
 file_bytes() { wc -c < "$1" | tr -d ' '; }
 human_size() {
@@ -186,3 +187,4 @@ echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar.\n"
 echo ""
+exit 0
